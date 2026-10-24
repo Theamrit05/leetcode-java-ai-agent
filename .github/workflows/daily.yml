@@ -25,9 +25,9 @@ jobs:
       - name: Generate today's Java solution
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-2.5-flash
-        run: |
-          python agent.py
+          # Google recommends newer models for new projects; Gemini 2.5 access is limited.
+          GEMINI_MODEL: gemini-3.8-flash
+        run: python agent.py
 
       - name: Upload solution artifact
         uses: actions/upload-artifact@v4
