@@ -11,10 +11,20 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 def post_json(url, payload, headers=None):
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json", **(headers or {})}
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "LeetCode-Java-AI-Agent/1.0",
+            **(headers or {}),
+        },
     )
-    with urllib.request.urlopen(request, timeout=45) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        # Do not expose query strings, which can contain API keys.
+        raise RuntimeError(f"Request failed for {url.split('?')[0]}: {exc}") from exc
 
 
 def get_daily_problem():
@@ -34,7 +44,11 @@ def get_daily_problem():
       }
     }
     """
-    result = post_json(LEETCODE_GRAPHQL, {"query": query})
+    result = post_json(
+        LEETCODE_GRAPHQL,
+        {"query": query},
+        headers={"Referer": "https://leetcode.com", "Origin": "https://leetcode.com"},
+    )
     item = result.get("data", {}).get("activeDailyCodingChallengeQuestion")
     if not item or not item.get("question"):
         raise RuntimeError("Could not retrieve today's challenge from LeetCode.")
@@ -57,7 +71,11 @@ def get_daily_problem():
 
 
 def solve_with_gemini(problem):
-    api_key = os.environ["GEMINI_API_KEY"]
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing. Add it under Settings > Secrets and variables > Actions."
+        )
     endpoint = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{GEMINI_MODEL}:generateContent?key={api_key}"
@@ -86,6 +104,8 @@ Problem statement (HTML):
         "generationConfig": {"temperature": 0.2}
     }
     result = post_json(endpoint, payload)
+    if result.get("error"):
+        raise RuntimeError("Gemini API error: " + json.dumps(result["error"])[:1000])
     candidates = result.get("candidates", [])
     if not candidates:
         raise RuntimeError("Gemini returned no answer: " + json.dumps(result)[:1200])
