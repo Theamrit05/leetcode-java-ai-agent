@@ -5,7 +5,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
 
 def post_json(url, payload, headers=None):
