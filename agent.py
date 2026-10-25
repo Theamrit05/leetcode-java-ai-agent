@@ -140,26 +140,38 @@ def get_solved_slugs():
 
 
 def extract_java_code(answer, java_template=""):
+    """Extract Java from fenced or unfenced model output and align the starter class name."""
     fence = chr(96) * 3
-    match = re.search(re.escape(fence) + r"java\s*(.*?)" + re.escape(fence), answer, re.IGNORECASE | re.DOTALL)
-    if not match:
-        match = re.search(re.escape(fence) + r"\w*\s*(.*?)" + re.escape(fence), answer, re.DOTALL)
-    if not match:
-        raise RuntimeError("AI response did not contain a fenced Java solution.")
-    code = match.group(1).strip()
-    # Design problems often require a named class (e.g. Trie or LRUCache), not Solution.
-    if not code or not re.search(r"\bclass\s+[A-Za-z_$][\w$]*", code):
-        raise RuntimeError("Extracted Java code does not contain a valid class declaration.")
+    match = re.search(
+        re.escape(fence) + r"\s*(?:java|Java)?\s*\n?(.*?)" + re.escape(fence),
+        answer or "", re.IGNORECASE | re.DOTALL
+    )
+    if match:
+        code = match.group(1).strip()
+    else:
+        # Some model responses (especially repair responses) omit markdown fences.
+        # Accept only text that looks like Java source; never submit prose as code.
+        raw = (answer or "").strip()
+        raw = re.sub(r"^\s*(?:Here(?:'s| is) the corrected code|Corrected Java solution|Java solution)\s*:?\s*", "", raw, flags=re.I)
+        raw = re.sub(r"^\s*" + re.escape(fence) + r"(?:java)?\s*", "", raw, flags=re.I)
+        raw = re.sub(r"\s*" + re.escape(fence) + r"\s*$", "", raw)
+        if re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", raw) and (
+            "{" in raw and (";" in raw or "}" in raw)
+        ):
+            code = raw
+            print("Model omitted Java code fences; accepted validated raw Java source.")
+        else:
+            raise RuntimeError("AI response did not contain a fenced Java solution or recognizable raw Java source.")
+
+    if not code or not re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", code):
+        raise RuntimeError("Extracted response does not contain a valid Java type declaration.")
+
     expected = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", java_template or "")
     actual = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", code)
     if expected and actual and expected.group(1) != actual.group(1):
-        old_name = actual.group(1)
-        required_name = expected.group(1)
-        # Match the class declaration and constructor identifiers to LeetCode's starter template.
-        code = code.replace("class " + old_name, "class " + required_name)
-        code = code.replace("public " + old_name + "(", "public " + required_name + "(")
-        code = code.replace("protected " + old_name + "(", "protected " + required_name + "(")
-        code = code.replace("private " + old_name + "(", "private " + required_name + "(")
+        old_name, required_name = actual.group(1), expected.group(1)
+        code = re.sub(r"\bclass\s+" + re.escape(old_name) + r"\b", "class " + required_name, code, count=1)
+        code = re.sub(r"\b(public|protected|private)\s+" + re.escape(old_name) + r"\s*(?=\()", r"\1 " + required_name, code)
         print(f"Adjusted generated class name to match starter template: {required_name}.")
     return code
 
