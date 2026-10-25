@@ -343,10 +343,10 @@ def main():
     random.shuffle(pool)
     print(f"Loaded {len(pool)} unsolved Easy/Medium candidates.")
 
-    # Try replacement problems when a candidate fails. The finite cap avoids endless
-    # API calls and makes it explicit when external limits prevent reaching the target.
-    max_candidates = min(len(pool), max(PROBLEMS_PER_RUN * 3, PROBLEMS_PER_RUN))
-    candidates = pool[:max_candidates]
+    # Keep trying distinct unsolved candidates until 10 are Accepted or the
+    # entire eligible pool / an external hard limit is exhausted.
+    candidates = pool
+    max_candidates = len(candidates)
     accepted = 0
     attempted = 0
     reports = []
