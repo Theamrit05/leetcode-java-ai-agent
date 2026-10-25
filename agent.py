@@ -91,7 +91,7 @@ def get_problem_pool():
         slug = stat.get("question__title_slug")
         level = pair.get("difficulty", {}).get("level")
         # LeetCode status 'ac' means the user has already solved the problem.
-        if not slug or pair.get("status") == "ac" or level not in (1, 2):
+        if not slug or pair.get("status") == "ac" or level not in (1, 2) or pair.get("paid_only", False):
             continue
         candidates.append({
             "title": stat.get("question__title", slug),
