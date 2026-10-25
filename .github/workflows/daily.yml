@@ -30,7 +30,8 @@ jobs:
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
           SUBMIT_TO_LEETCODE: "true"
-        run: python agent.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u agent.py
 
       - name: Upload solution artifact
         uses: actions/upload-artifact@v4
