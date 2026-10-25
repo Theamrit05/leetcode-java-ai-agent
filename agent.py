@@ -108,7 +108,7 @@ def solve_with_gemini(problem):
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     prompt = f"""
 Solve this LeetCode Daily Challenge in Java. Return a concise approach, complexity,
-and exactly one complete Java LeetCode submission inside a tilde-fenced java code block.
+and exactly one complete Java LeetCode submission inside a standard triple-backtick Java code block.
 Use the expected class/method signature from the supplied template. Avoid main().
 Do not claim it has been tested or accepted.
 
