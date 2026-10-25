@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Prevent overlapping scheduled/manual runs from competing for the same LeetCode session.
+concurrency:
+  group: daily-leetcode-java-agent
+  cancel-in-progress: false
+
 jobs:
   solve-daily:
     runs-on: ubuntu-latest
