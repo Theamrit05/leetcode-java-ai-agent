@@ -12,7 +12,7 @@ permissions:
 jobs:
   solve-daily:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,6 +29,7 @@ jobs:
           GEMINI_MODEL: gemini-3.8-flash
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
+          SUBMIT_TO_LEETCODE: "true"
         run: python agent.py
 
       - name: Upload solution artifact
