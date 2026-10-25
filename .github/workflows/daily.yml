@@ -24,9 +24,8 @@ jobs:
 
       - name: Generate 10 random Java solutions
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Google recommends newer models for new projects; Gemini 2.5 access is limited.
-          GEMINI_MODEL: gemini-3.8-flash
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_MODEL: gpt-oss:120b
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
           LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
           SUBMIT_TO_LEETCODE: "true"
