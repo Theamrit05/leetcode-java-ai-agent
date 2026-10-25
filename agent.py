@@ -13,6 +13,8 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 3
 PROBLEMS_PER_RUN = 10
+SUBMIT_TO_LEETCODE = os.getenv("SUBMIT_TO_LEETCODE", "true").lower() == "true"
+LEETCODE_SUBMISSION_TIMEOUT = 90
 
 
 class ProblemTextParser(HTMLParser):
@@ -95,10 +97,83 @@ def get_problem_pool():
     for item in pool:
         if item.get("titleSlug") and item.get("difficulty") in ("Easy", "Medium"):
             unique[item["titleSlug"]] = item
-    candidates = list(unique.values())
+    solved = get_solved_slugs()
+    candidates = [item for slug, item in unique.items() if slug not in solved]
+    print(f"Filtered out {len(unique) - len(candidates)} already-solved questions.")
     if len(candidates) < PROBLEMS_PER_RUN:
         raise RuntimeError(f"LeetCode returned only {len(candidates)} eligible random problems.")
     return random.sample(candidates, PROBLEMS_PER_RUN)
+
+
+def leetcode_auth_headers():
+    session = os.environ.get("LEETCODE_SESSION", "").strip()
+    csrf = os.environ.get("LEETCODE_CSRF_TOKEN", "").strip()
+    if not session or not csrf:
+        raise RuntimeError("LEETCODE_SESSION and LEETCODE_CSRF_TOKEN must be configured in GitHub Actions secrets.")
+    return {"Cookie": f"LEETCODE_SESSION={session}; csrftoken={csrf}", "x-csrftoken": csrf,
+            "Referer": "https://leetcode.com/", "Origin": "https://leetcode.com",
+            "User-Agent": "Mozilla/5.0 LeetCode-Java-AI-Agent/3.0"}
+
+
+def get_solved_slugs():
+    request = urllib.request.Request("https://leetcode.com/api/problems/all/",
+        headers={**leetcode_auth_headers(), "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Could not read solved-problem history from LeetCode: {exc}") from exc
+    solved = set()
+    for pair in payload.get("stat_status_pairs", []):
+        if pair.get("status") == "ac":
+            slug = (pair.get("stat") or {}).get("question__title_slug")
+            if slug:
+                solved.add(slug)
+    print(f"LeetCode reports {len(solved)} solved problems for this session.")
+    return solved
+
+
+def extract_java_code(answer):
+    fence = chr(96) * 3
+    match = re.search(re.escape(fence) + r"java\s*(.*?)" + re.escape(fence), answer, re.IGNORECASE | re.DOTALL)
+    if not match:
+        match = re.search(re.escape(fence) + r"\w*\s*(.*?)" + re.escape(fence), answer, re.DOTALL)
+    if not match:
+        raise RuntimeError("AI response did not contain a fenced Java solution.")
+    code = match.group(1).strip()
+    if not code or "class Solution" not in code:
+        raise RuntimeError("Extracted code is empty or does not contain class Solution.")
+    return code
+
+
+def submit_to_leetcode(problem, java_code):
+    headers = {**leetcode_auth_headers(), "Content-Type": "application/json"}
+    payload = {"lang": "java", "question_id": str(problem["question_id"]), "typed_code": java_code}
+    result = post_json(f"https://leetcode.com/problems/{problem['slug']}/submit/", payload,
+                       headers=headers, timeout=45)
+    submission_id = result.get("submission_id")
+    if not submission_id:
+        raise RuntimeError("LeetCode did not return a submission ID: " + json.dumps(result)[:1000])
+    print(f"Submitted {problem['title']} (submission ID {submission_id}); waiting for judge...")
+    check_url = f"https://leetcode.com/submissions/detail/{submission_id}/check/"
+    deadline, last_status = time.time() + LEETCODE_SUBMISSION_TIMEOUT, {}
+    while time.time() < deadline:
+        time.sleep(3)
+        req = urllib.request.Request(check_url, headers={**headers, "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as response:
+                last_status = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"Judge status poll failed; retrying: {exc}")
+            continue
+        status = last_status.get("status_msg") or last_status.get("state") or ""
+        if status and status not in ("Pending", "STARTED", "PENDING", "Judging"):
+            result = {"status": status, "submission_id": submission_id}
+            if status != "Accepted":
+                result["details"] = last_status.get("full_compile_error") or last_status.get("runtime_error") or status
+            return result
+    return {"status": "Timed out waiting for judge", "submission_id": submission_id,
+            "details": json.dumps(last_status)[:1000]}
 
 
 def get_problem_details(item):
@@ -174,23 +249,33 @@ def main():
     problems = get_problem_pool()
     print(f"Selected {len(problems)} random Easy/Medium LeetCode problems.")
     index_lines = [f"# Random LeetCode Java Practice — {date}", "",
-                   "Ten randomly selected Easy/Medium problems with AI-generated Java solutions.",
-                   "These are generated for review; this workflow does not submit them to your LeetCode account.", ""]
+                   "Ten randomly selected unsolved Easy/Medium problems with AI-generated Java solutions.",
+                   ("This run attempts real LeetCode submissions and records the judge result." if SUBMIT_TO_LEETCODE else "Submission is disabled; solutions are generated for review."), ""]
     failures = []
     for number, item in enumerate(problems, start=1):
         try:
             problem = get_problem_details(item)
             print(f"[{number}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
             answer = solve_with_gemini(problem)
+            submission = None
+            if SUBMIT_TO_LEETCODE:
+                java_code = extract_java_code(answer)
+                submission = submit_to_leetcode(problem, java_code)
+                print(f"Judge result: {submission['status']}")
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
             path = f"output/{date}-{number:02d}-{safe_slug}.md"
             with open(path, "w", encoding="utf-8") as file:
                 file.write(f"# {number}. {problem['title']}\n\n")
                 file.write(f"- **Difficulty:** {problem['difficulty']}\n- **Problem:** {problem['url']}\n")
                 file.write(f"- **Topics:** {', '.join(problem['topics'])}\n\n")
-                file.write("> AI-generated solution. Review and test the code before submitting.\n\n")
+                file.write("> AI-generated solution. Verify the judge result below.\n\n")
+                if submission:
+                    file.write(f"**LeetCode submission:** {submission['status']} (ID: {submission['submission_id']})\n\n")
+                    if submission.get("details"):
+                        file.write(f"**Judge details:** {submission['details']}\n\n")
                 file.write(answer + "\n")
-            index_lines.append(f"{number}. [{problem['title']}]({problem['url']}) — {problem['difficulty']} — [solution file]({os.path.basename(path)})")
+            result_label = submission["status"] if submission else "Generated only"
+            index_lines.append(f"{number}. [{problem['title']}]({problem['url']}) — {problem['difficulty']} — **{result_label}** — [solution file]({os.path.basename(path)})")
             print(f"Saved: {path}")
         except Exception as exc:
             failures.append(f"{number}. {item.get('title', item.get('titleSlug', 'Unknown'))}: {exc}")
