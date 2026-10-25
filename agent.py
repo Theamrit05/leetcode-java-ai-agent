@@ -212,11 +212,11 @@ def get_problem_details(item):
     }
 
 
-def solve_with_gemini(problem):
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+def solve_with_ollama(problem):
+    api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is missing. Add it in repository Actions secrets.")
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+        raise RuntimeError("OLLAMA_API_KEY is missing. Add it in repository Actions secrets.")
+    model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b")
     prompt = f"""
 Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
 complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
@@ -233,17 +233,25 @@ Java starter template:
 Problem statement:
 {problem['statement_text']}
 """
-    payload = {"contents": [{"parts": [{"text": prompt}]}],
-               "generationConfig": {"maxOutputTokens": 8192, "thinkingConfig": {"thinkingLevel": "low"}}}
-    result = post_json(endpoint, payload, headers={"x-goog-api-key": api_key}, timeout=REQUEST_TIMEOUT_SECONDS)
-    if result.get("error"):
-        raise RuntimeError("Gemini API error: " + json.dumps(result["error"])[:1000])
-    candidates = result.get("candidates", [])
-    if not candidates:
-        raise RuntimeError("Gemini returned no answer. Feedback: " + json.dumps(result.get("promptFeedback", {}))[:1000])
-    answer = "\n".join(part.get("text", "") for part in candidates[0].get("content", {}).get("parts", [])).strip()
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are an expert competitive programmer. Produce correct, efficient Java solutions that match LeetCode's exact method signature."},
+            {"role": "user", "content": prompt}
+        ],
+        "stream": False,
+        "think": False
+    }
+    result = post_json(
+        "https://ollama.com/api/chat",
+        payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    message = result.get("message") or {}
+    answer = (message.get("content") or "").strip()
     if not answer:
-        raise RuntimeError("Gemini response was empty.")
+        raise RuntimeError("Ollama returned an empty answer: " + json.dumps(result)[:1000])
     return answer
 
 
@@ -260,7 +268,7 @@ def main():
         try:
             problem = get_problem_details(item)
             print(f"[{number}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
-            answer = solve_with_gemini(problem)
+            answer = solve_with_ollama(problem)
             submission = None
             if SUBMIT_TO_LEETCODE:
                 java_code = extract_java_code(answer)
