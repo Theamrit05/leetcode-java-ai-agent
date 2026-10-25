@@ -1,8 +1,6 @@
 name: Daily LeetCode Java Solver
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Runs daily at 00:30 UTC (06:00 IST)
     - cron: "30 0 * * *"
@@ -29,6 +27,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Google recommends newer models for new projects; Gemini 2.5 access is limited.
           GEMINI_MODEL: gemini-3.8-flash
+          LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
+          LEETCODE_CSRF_TOKEN: ${{ secrets.LEETCODE_CSRF_TOKEN }}
         run: python agent.py
 
       - name: Upload solution artifact
