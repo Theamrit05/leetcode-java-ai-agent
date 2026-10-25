@@ -255,6 +255,52 @@ Problem statement:
     return answer
 
 
+
+def repair_with_ollama(problem, previous_answer, compile_error, attempt):
+    """Ask the model to repair a failed submission using LeetCode's actual judge feedback."""
+    api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b")
+    prompt = f"""
+Your previous Java solution for this LeetCode problem failed to compile.
+Repair it using the exact compiler feedback below. Return the complete corrected solution
+in exactly one ```java code block. Preserve LeetCode's required class and method signature
+from the starter template. Do not include main(), prose inside the code block, or tests.
+
+Problem: {problem['title']}
+Difficulty: {problem['difficulty']}
+Starter template:
+{problem['java_template'] or '(not provided)'}
+
+Problem statement:
+{problem['statement_text']}
+
+Previous answer:
+{previous_answer}
+
+LeetCode compiler feedback:
+{compile_error}
+
+This is repair attempt {attempt}. Fix the specific compilation issue; do not merely explain it.
+"""
+    result = post_json(
+        "https://ollama.com/api/chat",
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are an expert Java competitive programmer. Correct compilation errors precisely and follow LeetCode method signatures exactly."},
+                {"role": "user", "content": prompt}
+            ],
+            "stream": False,
+            "think": False
+        },
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    answer = ((result.get("message") or {}).get("content") or "").strip()
+    if not answer:
+        raise RuntimeError("Ollama returned an empty repair response.")
+    return answer
+
 def main():
     os.makedirs("output", exist_ok=True)
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -274,6 +320,16 @@ def main():
                 java_code = extract_java_code(answer)
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
+                # Automatically attempt up to two targeted repairs for compile errors.
+                for repair_attempt in range(1, 3):
+                    if submission.get("status") != "Compile Error":
+                        break
+                    compiler_feedback = submission.get("details") or "Compile Error (no details returned)"
+                    print(f"Compile error detected; requesting targeted repair {repair_attempt}/2...")
+                    answer = repair_with_ollama(problem, answer, compiler_feedback, repair_attempt)
+                    java_code = extract_java_code(answer)
+                    submission = submit_to_leetcode(problem, java_code)
+                    print(f"Judge result after repair {repair_attempt}: {submission['status']}")
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
             path = f"output/{date}-{number:02d}-{safe_slug}.md"
             with open(path, "w", encoding="utf-8") as file:
