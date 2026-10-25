@@ -137,7 +137,7 @@ def get_solved_slugs():
     return solved
 
 
-def extract_java_code(answer):
+def extract_java_code(answer, java_template=""):
     fence = chr(96) * 3
     match = re.search(re.escape(fence) + r"java\s*(.*?)" + re.escape(fence), answer, re.IGNORECASE | re.DOTALL)
     if not match:
@@ -145,8 +145,13 @@ def extract_java_code(answer):
     if not match:
         raise RuntimeError("AI response did not contain a fenced Java solution.")
     code = match.group(1).strip()
-    if not code or "class Solution" not in code:
-        raise RuntimeError("Extracted code is empty or does not contain class Solution.")
+    # Design problems often require a named class (e.g. Trie or LRUCache), not Solution.
+    if not code or not re.search(r"\bclass\s+[A-Za-z_$][\w$]*", code):
+        raise RuntimeError("Extracted Java code does not contain a valid class declaration.")
+    expected = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", java_template or "")
+    actual = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", code)
+    if expected and actual and expected.group(1) != actual.group(1):
+        raise RuntimeError(f"Java class name mismatch: expected {expected.group(1)}, got {actual.group(1)}.")
     return code
 
 
@@ -220,7 +225,7 @@ def solve_with_ollama(problem):
     prompt = f"""
 Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
 complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
-java code block. Use the supplied class/method signature. Do not include main().
+java code block. Preserve the exact class name and method/constructor signatures in the supplied starter template. For design problems, implement the named class (such as LRUCache or Trie), not class Solution. For ordinary algorithm problems, use class Solution if the template does. Do not include main().
 Do not claim the code has been tested or accepted.
 
 Title: {problem['title']}
@@ -263,8 +268,7 @@ def repair_with_ollama(problem, previous_answer, compile_error, attempt):
     prompt = f"""
 Your previous Java solution for this LeetCode problem failed to compile.
 Repair it using the exact compiler feedback below. Return the complete corrected solution
-in exactly one ```java code block. Preserve LeetCode's required class and method signature
-from the starter template. Do not include main(), prose inside the code block, or tests.
+in exactly one ```java code block. Preserve LeetCode's exact class name and method/constructor signatures from the starter template. For design problems, implement the named class rather than class Solution. Do not include main(), prose inside the code block, or tests.
 
 Problem: {problem['title']}
 Difficulty: {problem['difficulty']}
@@ -317,7 +321,7 @@ def main():
             answer = solve_with_ollama(problem)
             submission = None
             if SUBMIT_TO_LEETCODE:
-                java_code = extract_java_code(answer)
+                java_code = extract_java_code(answer, problem.get('java_template', ''))
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
                 # Automatically attempt up to two targeted repairs for compile errors.
@@ -327,7 +331,7 @@ def main():
                     compiler_feedback = submission.get("details") or "Compile Error (no details returned)"
                     print(f"Compile error detected; requesting targeted repair {repair_attempt}/2...")
                     answer = repair_with_ollama(problem, answer, compiler_feedback, repair_attempt)
-                    java_code = extract_java_code(answer)
+                    java_code = extract_java_code(answer, problem.get('java_template', ''))
                     submission = submit_to_leetcode(problem, java_code)
                     print(f"Judge result after repair {repair_attempt}: {submission['status']}")
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
