@@ -325,69 +325,129 @@ feedback is Wrong Answer, do not just change syntax: reconsider the logic and ed
 def main():
     os.makedirs("output", exist_ok=True)
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    problems = get_problem_pool()
-    print(f"Selected {len(problems)} random Easy/Medium LeetCode problems.")
-    index_lines = [f"# Random LeetCode Java Practice — {date}", "",
-                   "Ten randomly selected unsolved Easy/Medium problems with AI-generated Java solutions.",
-                   ("This run attempts real LeetCode submissions and records the judge result." if SUBMIT_TO_LEETCODE else "Submission is disabled; solutions are generated for review."), ""]
-    failures = []
+    pool = get_problem_pool()
+    random.shuffle(pool)
+    print(f"Loaded {len(pool)} unsolved Easy/Medium candidates.")
+
+    # Try replacement problems when a candidate fails. The finite cap avoids endless
+    # API calls and makes it explicit when external limits prevent reaching the target.
+    max_candidates = min(len(pool), max(PROBLEMS_PER_RUN * 3, PROBLEMS_PER_RUN))
+    candidates = pool[:max_candidates]
+    accepted = 0
+    attempted = 0
+    reports = []
     judge_counts = {}
-    for number, item in enumerate(problems, start=1):
+    failures = []
+    seen_slugs = set()
+
+    for item in candidates:
+        if accepted >= PROBLEMS_PER_RUN:
+            break
+        slug = item.get("titleSlug")
+        if not slug or slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        attempted += 1
+        problem = None
+        answer = ""
+        submission = None
+        error_text = ""
         try:
             problem = get_problem_details(item)
-            print(f"[{number}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
+            print(f"[Candidate {attempted}/{max_candidates}; Accepted {accepted}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
             answer = solve_with_ollama(problem)
-            submission = None
+
             if SUBMIT_TO_LEETCODE:
-                java_code = extract_java_code(answer, problem.get('java_template', ''))
+                java_code = extract_java_code(answer, problem.get("java_template", ""))
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
-                # Retry a bounded number of times for compile/runtime/wrong-answer outcomes.
+
                 repairable_statuses = {"Compile Error", "Wrong Answer", "Runtime Error"}
                 for repair_attempt in range(1, 3):
-                    status = submission.get("status", "")
-                    if status not in repairable_statuses:
+                    if submission.get("status") not in repairable_statuses:
                         break
-                    feedback = submission.get("details") or status
-                    print(f"{status} detected; requesting solution repair {repair_attempt}/2...")
+                    feedback = submission.get("details") or submission["status"]
+                    print(f"{submission['status']} detected; requesting repair {repair_attempt}/2...")
                     answer = repair_with_ollama(
-                        problem, answer, feedback, repair_attempt, failure_status=status
+                        problem, answer, feedback, repair_attempt,
+                        failure_status=submission["status"]
                     )
                     java_code = extract_java_code(answer, problem.get("java_template", ""))
                     submission = submit_to_leetcode(problem, java_code)
                     print(f"Judge result after repair {repair_attempt}: {submission['status']}")
+
+            label = submission["status"] if submission else "Generated only"
+            if submission:
+                judge_counts[label] = judge_counts.get(label, 0) + 1
+            if SUBMIT_TO_LEETCODE and label == "Accepted":
+                accepted += 1
+
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
-            path = f"output/{date}-{number:02d}-{safe_slug}.md"
+            path = f"output/{date}-{attempted:02d}-{safe_slug}.md"
             with open(path, "w", encoding="utf-8") as file:
-                file.write(f"# {number}. {problem['title']}\n\n")
+                file.write(f"# {attempted}. {problem['title']}\n\n")
                 file.write(f"- **Difficulty:** {problem['difficulty']}\n- **Problem:** {problem['url']}\n")
                 file.write(f"- **Topics:** {', '.join(problem['topics'])}\n\n")
-                file.write("> AI-generated solution. Verify the judge result below.\n\n")
+                file.write("> AI-generated solution. The judge status below is the recorded LeetCode result.\n\n")
                 if submission:
-                    file.write(f"**LeetCode submission:** {submission['status']} (ID: {submission['submission_id']})\n\n")
+                    file.write(f"**LeetCode submission:** {label} (ID: {submission.get('submission_id', 'unknown')})\n\n")
                     if submission.get("details"):
                         file.write(f"**Judge details:** {submission['details']}\n\n")
-                file.write(answer + "\n")
-            result_label = submission["status"] if submission else "Generated only"
-            if submission:
-                judge_counts[result_label] = judge_counts.get(result_label, 0) + 1
-            index_lines.append(f"{number}. [{problem['title']}]({problem['url']}) — {problem['difficulty']} — **{result_label}** — [solution file]({os.path.basename(path)})")
+                file.write((answer or "No solution text was generated.") + "\n")
+            reports.append((problem["title"], problem["url"], problem["difficulty"], label, os.path.basename(path)))
             print(f"Saved: {path}")
         except Exception as exc:
-            failures.append(f"{number}. {item.get('title', item.get('titleSlug', 'Unknown'))}: {exc}")
-            print(f"Problem {number} failed: {exc}")
-    index_lines.extend(["", f"**Generated reports:** {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN}"])
+            error_text = str(exc)
+            title = (problem or {}).get("title", item.get("title", slug or "Unknown"))
+            failures.append(f"{title}: {error_text}")
+            print(f"Candidate failed: {title}: {error_text}")
+            # Don't burn the remaining quota if credentials are invalid or the model
+            # provider explicitly rejects/rate-limits requests.
+            lowered = error_text.lower()
+            if any(term in lowered for term in (
+                "401", "403", "unauthorized", "invalid api key",
+                "quota exceeded", "insufficient quota", "rate limit",
+                "429", "leetcodesession", "csrf token"
+            )):
+                print("Stopping early: an authentication or provider-limit error needs attention.")
+                break
+            # Save a failure report too, so a skipped candidate is never invisible.
+            safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", slug or f"candidate-{attempted}")
+            path = f"output/{date}-{attempted:02d}-{safe_slug}-FAILED.md"
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(f"# Failed candidate: {item.get('title', slug)}\n\n")
+                file.write(f"- **Problem slug:** {slug}\n- **Error:** {error_text}\n")
+            reports.append((item.get("title", slug), "https://leetcode.com/problems/" + str(slug) + "/", item.get("difficulty", ""), "Failed: " + error_text, os.path.basename(path)))
+
+    index_lines = [
+        f"# Daily LeetCode Java Agent — {date}", "",
+        f"- **Accepted target:** {PROBLEMS_PER_RUN}",
+        f"- **Accepted achieved:** {accepted if SUBMIT_TO_LEETCODE else 'Submission disabled'}",
+        f"- **Candidates attempted:** {attempted}",
+        f"- **Reports saved:** {len(reports)}", "",
+        "A green workflow means the run completed, not that every submission was Accepted.",
+        ""
+    ]
     if SUBMIT_TO_LEETCODE:
-        index_lines.extend(["", "## Actual LeetCode judge results"])
-        index_lines.extend([f"- **{status}:** {count}" for status, count in sorted(judge_counts.items())] or ["- No judge results recorded."])
-        index_lines.append("- GitHub Actions success means the workflow finished; it does not mean every submission was Accepted.")
+        index_lines.extend(["## Judge summary", *[
+            f"- **{status}:** {count}" for status, count in sorted(judge_counts.items())
+        ]] if judge_counts else ["## Judge summary", "- No judge results recorded."])
+    index_lines.extend(["", "## Candidate results"])
+    for number, (title, url, difficulty, label, filename) in enumerate(reports, start=1):
+        index_lines.append(f"{number}. [{title}]({url}) — {difficulty} — **{label}** — [report]({filename})")
     if failures:
-        index_lines.extend(["", "## Problems that failed to generate", *[f"- {failure}" for failure in failures]])
+        index_lines.extend(["", "## Errors", *[f"- {failure}" for failure in failures]])
+    if SUBMIT_TO_LEETCODE and accepted < PROBLEMS_PER_RUN:
+        index_lines.extend(["", f"**Target not reached:** {accepted}/{PROBLEMS_PER_RUN} Accepted after {attempted} candidates. The run stopped because candidates were exhausted or an external/API error occurred."])
     with open(f"output/{date}-index.md", "w", encoding="utf-8") as file:
         file.write("\n".join(index_lines) + "\n")
-    print(f"Finished: {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN} solutions generated.")
-    if len(failures) == PROBLEMS_PER_RUN:
-        raise RuntimeError("All 10 problem generations failed.")
+
+    print(f"Finished: {accepted}/{PROBLEMS_PER_RUN} Accepted; {attempted} candidates attempted; {len(reports)} reports saved.")
+    if not reports:
+        raise RuntimeError("No solution or failure reports were produced.")
+    if SUBMIT_TO_LEETCODE and accepted < PROBLEMS_PER_RUN:
+        # Fail the workflow visibly instead of showing a misleading green tick.
+        raise RuntimeError(f"Accepted target not reached: {accepted}/{PROBLEMS_PER_RUN}. See the uploaded index/report for details.")
 
 
 if __name__ == "__main__":
