@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 import time
 import urllib.error
@@ -11,6 +12,7 @@ LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 3
+PROBLEMS_PER_RUN = 10
 
 
 class ProblemTextParser(HTMLParser):
@@ -24,13 +26,13 @@ class ProblemTextParser(HTMLParser):
         if tag in self.BLOCK_TAGS:
             self.parts.append("\n")
         if tag == "code":
-            self.parts.append("\`")
+            self.parts.append("`")
 
     def handle_endtag(self, tag):
         if tag in self.BLOCK_TAGS:
             self.parts.append("\n")
         if tag == "code":
-            self.parts.append("\`")
+            self.parts.append("`")
 
     def handle_data(self, data):
         self.parts.append(data)
@@ -45,7 +47,7 @@ class ProblemTextParser(HTMLParser):
 def post_json(url, payload, headers=None, timeout=REQUEST_TIMEOUT_SECONDS):
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "LeetCode-Java-AI-Agent/1.2", **(headers or {})},
+        headers={"Content-Type": "application/json", "User-Agent": "LeetCode-Java-AI-Agent/2.0", **(headers or {})},
     )
     last_error = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -58,7 +60,7 @@ def post_json(url, payload, headers=None, timeout=REQUEST_TIMEOUT_SECONDS):
             if exc.code not in (408, 429, 500, 502, 503, 504) or attempt == MAX_ATTEMPTS:
                 raise last_error from exc
         except (TimeoutError, urllib.error.URLError) as exc:
-            last_error = RuntimeError(f"Network request to {url.split('?')[0]} failed (attempt {attempt}/{MAX_ATTEMPTS}): {exc}")
+            last_error = RuntimeError(f"Network request failed (attempt {attempt}/{MAX_ATTEMPTS}): {exc}")
             if attempt == MAX_ATTEMPTS:
                 raise last_error from exc
         if attempt < MAX_ATTEMPTS:
@@ -68,36 +70,66 @@ def post_json(url, payload, headers=None, timeout=REQUEST_TIMEOUT_SECONDS):
     raise last_error or RuntimeError("Request failed.")
 
 
-def get_daily_problem():
+def get_problem_pool():
     query = """
-    query questionOfToday {
-      activeDailyCodingChallengeQuestion {
-        date link
-        question {
-          questionId questionFrontendId title titleSlug difficulty content
-          topicTags { name }
-          codeSnippets { lang langSlug code }
-        }
+    query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
+      problemsetQuestionList(categorySlug: $categorySlug, limit: $limit, skip: $skip, filters: $filters) {
+        total
+        questions { title titleSlug difficulty questionFrontendId }
       }
     }
     """
-    result = post_json(LEETCODE_GRAPHQL, {"query": query},
+    pool = []
+    # Draw a large random sample from Easy and Medium; avoid premium-only questions.
+    for difficulty in ("EASY", "MEDIUM"):
+        result = post_json(LEETCODE_GRAPHQL, {
+            "query": query,
+            "variables": {"categorySlug": "", "limit": 100, "skip": random.randint(0, 1500),
+                          "filters": {"difficulty": difficulty}}
+        }, headers={"Referer": "https://leetcode.com/problemset/", "Origin": "https://leetcode.com"}, timeout=45)
+        if result.get("errors"):
+            raise RuntimeError("LeetCode problem list error: " + json.dumps(result["errors"])[:800])
+        data = result.get("data", {}).get("problemsetQuestionList") or {}
+        pool.extend(data.get("questions") or [])
+    unique = {}
+    for item in pool:
+        if item.get("titleSlug") and item.get("difficulty") in ("Easy", "Medium"):
+            unique[item["titleSlug"]] = item
+    candidates = list(unique.values())
+    if len(candidates) < PROBLEMS_PER_RUN:
+        raise RuntimeError(f"LeetCode returned only {len(candidates)} eligible random problems.")
+    return random.sample(candidates, PROBLEMS_PER_RUN)
+
+
+def get_problem_details(item):
+    query = """
+    query questionData($titleSlug: String!) {
+      question(titleSlug: $titleSlug) {
+        questionId questionFrontendId title titleSlug difficulty content
+        topicTags { name }
+        codeSnippets { lang langSlug code }
+      }
+    }
+    """
+    result = post_json(LEETCODE_GRAPHQL, {"query": query, "variables": {"titleSlug": item["titleSlug"]}},
         headers={"Referer": "https://leetcode.com", "Origin": "https://leetcode.com"}, timeout=45)
     if result.get("errors"):
-        raise RuntimeError("LeetCode GraphQL error: " + json.dumps(result["errors"])[:1000])
-    item = result.get("data", {}).get("activeDailyCodingChallengeQuestion")
-    if not item or not item.get("question"):
-        raise RuntimeError("Could not retrieve today's challenge from LeetCode.")
-    q = item["question"]
-    java_template = next((s.get("code", "") for s in q.get("codeSnippets", []) if s.get("langSlug") == "java"), "")
+        raise RuntimeError("LeetCode question detail error: " + json.dumps(result["errors"])[:800])
+    q = result.get("data", {}).get("question")
+    if not q or not q.get("content"):
+        raise RuntimeError("Could not retrieve problem details for " + item["titleSlug"])
     parser = ProblemTextParser()
-    parser.feed(q.get("content", ""))
+    parser.feed(q["content"])
+    java_template = next((s.get("code", "") for s in q.get("codeSnippets", []) if s.get("langSlug") == "java"), "")
     return {
-        "date": item.get("date", ""), "url": "https://leetcode.com" + item.get("link", ""),
-        "title": q.get("title", ""), "slug": q.get("titleSlug", ""),
-        "question_id": str(q.get("questionId") or q.get("questionFrontendId") or ""),
-        "difficulty": q.get("difficulty", ""), "statement_text": parser.text(),
-        "topics": [tag["name"] for tag in q.get("topicTags", [])], "java_template": java_template,
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "url": "https://leetcode.com/problems/" + q["titleSlug"] + "/",
+        "title": q["title"], "slug": q["titleSlug"],
+        "question_id": str(q.get("questionFrontendId") or q.get("questionId") or ""),
+        "difficulty": q.get("difficulty", item.get("difficulty", "")),
+        "statement_text": parser.text(),
+        "topics": [tag["name"] for tag in q.get("topicTags", [])],
+        "java_template": java_template,
     }
 
 
@@ -107,10 +139,10 @@ def solve_with_gemini(problem):
         raise RuntimeError("GEMINI_API_KEY is missing. Add it in repository Actions secrets.")
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     prompt = f"""
-Solve this LeetCode Daily Challenge in Java. Return a concise approach, complexity,
-and exactly one complete Java LeetCode submission inside a standard triple-backtick Java code block.
-Use the expected class/method signature from the supplied template. Avoid main().
-Do not claim it has been tested or accepted.
+Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
+complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
+java code block. Use the supplied class/method signature. Do not include main().
+Do not claim the code has been tested or accepted.
 
 Title: {problem['title']}
 Difficulty: {problem['difficulty']}
@@ -136,82 +168,41 @@ Problem statement:
     return answer
 
 
-def extract_java_code(markdown):
-    fence = chr(96) * 3
-    pattern = re.escape(fence) + r"(?:java)?\s*\n(.*?)" + re.escape(fence)
-    blocks = re.findall(pattern, markdown, flags=re.IGNORECASE | re.DOTALL)
-    if not blocks:
-        raise RuntimeError("AI response did not contain a fenced Java code block; refusing to submit.")
-    for block in blocks:
-        if re.search(r"\bclass\s+Solution\b", block):
-            return block.strip()
-    return blocks[0].strip()
-
-
-def get_json(url, headers=None, timeout=30):
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 LeetCode-Java-AI-Agent/1.2", **(headers or {})})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"LeetCode status check failed with HTTP {exc.code}. Check the session/CSRF secrets.") from exc
-
-
-def submit_to_leetcode(problem, java_code):
-    session = os.environ.get("LEETCODE_SESSION", "").strip()
-    csrf = os.environ.get("LEETCODE_CSRF_TOKEN", "").strip()
-    if not session or not csrf:
-        print("AUTO_SUBMIT_SKIPPED: Add LEETCODE_SESSION and LEETCODE_CSRF_TOKEN repository secrets to enable automatic submission.")
-        return "SKIPPED — LeetCode authentication secrets are not configured."
-    slug, question_id = problem["slug"], problem["question_id"]
-    if not slug or not question_id:
-        raise RuntimeError("Missing LeetCode problem slug/question ID; refusing to submit.")
-    headers = {
-        "Cookie": f"LEETCODE_SESSION={session}; csrftoken={csrf}", "x-csrftoken": csrf,
-        "Referer": problem["url"], "Origin": "https://leetcode.com",
-        "User-Agent": "Mozilla/5.0 LeetCode-Java-AI-Agent/1.2",
-    }
-    endpoint = f"https://leetcode.com/problems/{slug}/submit/"
-    payload = {"lang": "java", "question_id": question_id, "typed_code": java_code,
-               "judge_type": "large", "test_mode": False}
-    response = post_json(endpoint, payload, headers=headers, timeout=60)
-    submission_id = response.get("submission_id")
-    if not submission_id:
-        raise RuntimeError("LeetCode did not return a submission ID: " + json.dumps(response)[:1000])
-    print(f"LeetCode submission created: {submission_id}")
-    check_url = f"https://leetcode.com/submissions/detail/{submission_id}/check/"
-    for attempt in range(1, 25):
-        time.sleep(3)
-        status = get_json(check_url, headers=headers, timeout=30)
-        state = str(status.get("state", "")).upper()
-        message = status.get("status_msg") or status.get("statusMsg") or state or "Pending"
-        print(f"LeetCode judge status ({attempt}/24): {message}")
-        if state == "SUCCESS" or status.get("status_code") is not None:
-            result = str(status.get("status_msg") or message)
-            if status.get("total_correct") is not None and status.get("total_testcases") is not None:
-                result += f" — {status['total_correct']}/{status['total_testcases']} test cases"
-            return result
-    return f"SUBMITTED — judging status did not finish polling. Submission ID: {submission_id}"
-
-
 def main():
-    problem = get_daily_problem()
-    print(f"Fetched: {problem['title']} ({problem['difficulty']})")
-    answer = solve_with_gemini(problem)
-    submission_result = submit_to_leetcode(problem, extract_java_code(answer))
     os.makedirs("output", exist_ok=True)
-    date = problem.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem.get("slug") or "daily-challenge")
-    path = f"output/{date}-{safe_slug}.md"
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(f"# {problem['title']}\n\n")
-        file.write(f"- **Date:** {date}\n- **Difficulty:** {problem['difficulty']}\n")
-        file.write(f"- **Problem:** {problem['url']}\n- **LeetCode submission result:** {submission_result}\n\n")
-        file.write("> AI-generated solution. Automatic submission results depend on LeetCode judging. Review the result before relying on it.\n\n")
-        file.write(answer + "\n")
-    print(f"Generated solution: {path}")
-    print(f"Problem: {problem['title']} ({problem['difficulty']})")
-    print(f"Submission result: {submission_result}")
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    problems = get_problem_pool()
+    print(f"Selected {len(problems)} random Easy/Medium LeetCode problems.")
+    index_lines = [f"# Random LeetCode Java Practice — {date}", "",
+                   "Ten randomly selected Easy/Medium problems with AI-generated Java solutions.",
+                   "These are generated for review; this workflow does not submit them to your LeetCode account.", ""]
+    failures = []
+    for number, item in enumerate(problems, start=1):
+        try:
+            problem = get_problem_details(item)
+            print(f"[{number}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
+            answer = solve_with_gemini(problem)
+            safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
+            path = f"output/{date}-{number:02d}-{safe_slug}.md"
+            with open(path, "w", encoding="utf-8") as file:
+                file.write(f"# {number}. {problem['title']}\n\n")
+                file.write(f"- **Difficulty:** {problem['difficulty']}\n- **Problem:** {problem['url']}\n")
+                file.write(f"- **Topics:** {', '.join(problem['topics'])}\n\n")
+                file.write("> AI-generated solution. Review and test the code before submitting.\n\n")
+                file.write(answer + "\n")
+            index_lines.append(f"{number}. [{problem['title']}]({problem['url']}) — {problem['difficulty']} — [solution file]({os.path.basename(path)})")
+            print(f"Saved: {path}")
+        except Exception as exc:
+            failures.append(f"{number}. {item.get('title', item.get('titleSlug', 'Unknown'))}: {exc}")
+            print(f"Problem {number} failed: {exc}")
+    index_lines.extend(["", f"**Completed:** {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN}"])
+    if failures:
+        index_lines.extend(["", "## Problems that failed to generate", *[f"- {failure}" for failure in failures]])
+    with open(f"output/{date}-index.md", "w", encoding="utf-8") as file:
+        file.write("\n".join(index_lines) + "\n")
+    print(f"Finished: {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN} solutions generated.")
+    if len(failures) == PROBLEMS_PER_RUN:
+        raise RuntimeError("All 10 problem generations failed.")
 
 
 if __name__ == "__main__":
