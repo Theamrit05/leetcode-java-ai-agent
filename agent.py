@@ -372,7 +372,17 @@ def main():
             answer = solve_with_ollama(problem)
 
             if SUBMIT_TO_LEETCODE:
-                java_code = extract_java_code(answer, problem.get("java_template", ""))
+                # If the model returns prose/invalid formatting, ask it again before
+                # abandoning this problem. This is separate from judge-based repairs.
+                for format_attempt in range(1, 4):
+                    try:
+                        java_code = extract_java_code(answer, problem.get("java_template", ""))
+                        break
+                    except RuntimeError as format_error:
+                        if format_attempt >= 3:
+                            raise
+                        print(f"Invalid Java response; regenerating solution {format_attempt + 1}/3: {format_error}")
+                        answer = solve_with_ollama(problem)
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
@@ -419,7 +429,7 @@ def main():
             # provider explicitly rejects/rate-limits requests.
             lowered = error_text.lower()
             if any(term in lowered for term in (
-                "401", "403", "unauthorized", "invalid api key",
+                "401", "unauthorized", "invalid api key",
                 "quota exceeded", "insufficient quota", "rate limit",
                 "429", "leetcodesession", "csrf token"
             )):
