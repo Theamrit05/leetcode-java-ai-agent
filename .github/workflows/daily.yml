@@ -1,9 +1,9 @@
-name: Daily LeetCode Java Solver
+name: Daily 10 Random LeetCode Java Solvers
 
 on:
   schedule:
-    # Runs daily at 00:30 UTC (06:00 IST)
-    - cron: "30 0 * * *"
+    # Runs daily at 14:30 UTC (20:00 IST)
+    - cron: "30 14 * * *"
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Generate today's Java solution
+      - name: Generate 10 random Java solutions
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Google recommends newer models for new projects; Gemini 2.5 access is limited.
@@ -34,7 +34,7 @@ jobs:
       - name: Upload solution artifact
         uses: actions/upload-artifact@v4
         with:
-          name: leetcode-java-daily-solution
+          name: leetcode-java-10-random-solutions
           path: output/*.md
           if-no-files-found: error
           retention-days: 30
