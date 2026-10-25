@@ -73,36 +73,40 @@ def post_json(url, payload, headers=None, timeout=REQUEST_TIMEOUT_SECONDS):
 
 
 def get_problem_pool():
-    query = """
-    query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
-      problemsetQuestionList(categorySlug: $categorySlug, limit: $limit, skip: $skip, filters: $filters) {
-        total
-        questions { title titleSlug difficulty questionFrontendId }
-      }
-    }
-    """
-    pool = []
-    # Draw a large random sample from Easy and Medium; avoid premium-only questions.
-    for difficulty in ("EASY", "MEDIUM"):
-        result = post_json(LEETCODE_GRAPHQL, {
-            "query": query,
-            "variables": {"categorySlug": "", "limit": 100, "skip": random.randint(0, 1500),
-                          "filters": {"difficulty": difficulty}}
-        }, headers={"Referer": "https://leetcode.com/problemset/", "Origin": "https://leetcode.com"}, timeout=45)
-        if result.get("errors"):
-            raise RuntimeError("LeetCode problem list error: " + json.dumps(result["errors"])[:800])
-        data = result.get("data", {}).get("problemsetQuestionList") or {}
-        pool.extend(data.get("questions") or [])
-    unique = {}
-    for item in pool:
-        if item.get("titleSlug") and item.get("difficulty") in ("Easy", "Medium"):
-            unique[item["titleSlug"]] = item
-    solved = get_solved_slugs()
-    candidates = [item for slug, item in unique.items() if slug not in solved]
-    print(f"Filtered out {len(unique) - len(candidates)} already-solved questions.")
-    if len(candidates) < PROBLEMS_PER_RUN:
-        raise RuntimeError(f"LeetCode returned only {len(candidates)} eligible random problems.")
-    return random.sample(candidates, PROBLEMS_PER_RUN)
+    # Use LeetCode's problem-status endpoint instead of the obsolete
+    # problemsetQuestionList GraphQL field (which now returns HTTP 400).
+    request = urllib.request.Request(
+        "https://leetcode.com/api/problems/all/",
+        headers={**leetcode_auth_headers(), "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(f"Could not load LeetCode problem list: {exc}") from exc
+
+    candidates = []
+    for pair in payload.get("stat_status_pairs", []):
+        stat = pair.get("stat") or {}
+        slug = stat.get("question__title_slug")
+        level = pair.get("difficulty", {}).get("level")
+        # LeetCode status 'ac' means the user has already solved the problem.
+        if not slug or pair.get("status") == "ac" or level not in (1, 2):
+            continue
+        candidates.append({
+            "title": stat.get("question__title", slug),
+            "titleSlug": slug,
+            "difficulty": "Easy" if level == 1 else "Medium",
+            "questionFrontendId": stat.get("frontend_question_id"),
+        })
+    # Deduplicate and randomly choose ten unsolved, non-premium Easy/Medium questions.
+    unique = {item["titleSlug"]: item for item in candidates}
+    if len(unique) < PROBLEMS_PER_RUN:
+        raise RuntimeError(
+            f"LeetCode returned only {len(unique)} unsolved Easy/Medium questions for this account."
+        )
+    print(f"Found {len(unique)} unsolved Easy/Medium questions.")
+    return random.sample(list(unique.values()), PROBLEMS_PER_RUN)
 
 
 def leetcode_auth_headers():
