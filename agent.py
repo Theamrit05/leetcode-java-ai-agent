@@ -137,9 +137,11 @@ Problem statement:
 
 
 def extract_java_code(markdown):
-    blocks = re.findall(r"~~~(?:java)?\s*\n(.*?)~~~", markdown, flags=re.IGNORECASE | re.DOTALL)
+    fence = chr(96) * 3
+    pattern = re.escape(fence) + r"(?:java)?\s*\n(.*?)" + re.escape(fence)
+    blocks = re.findall(pattern, markdown, flags=re.IGNORECASE | re.DOTALL)
     if not blocks:
-        raise RuntimeError("AI response did not contain a tilde-fenced Java code block; refusing to submit.")
+        raise RuntimeError("AI response did not contain a fenced Java code block; refusing to submit.")
     for block in blocks:
         if re.search(r"\bclass\s+Solution\b", block):
             return block.strip()
