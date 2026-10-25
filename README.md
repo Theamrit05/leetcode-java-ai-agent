@@ -4,16 +4,23 @@ A GitHub Actions workflow that fetches the current LeetCode Daily Challenge and 
 
 ## Setup
 
-1. In repository **Settings → Secrets and variables → Actions**, add a repository secret named `GEMINI_API_KEY`.
-2. Open **Actions** and enable workflows if GitHub prompts you.
-3. Open **Daily LeetCode Java Solver** and select **Run workflow** to test it.
-4. Open the completed run and download the `leetcode-java-daily-solution` artifact.
+1. In repository Settings → Secrets and variables → Actions, add GEMINI_API_KEY.
+2. To enable automatic submission, also add LEETCODE_SESSION and LEETCODE_CSRF_TOKEN as repository secrets. Never paste these values into chat, issues, code, or logs.
+3. Open Actions and enable workflows if GitHub prompts you.
+4. The workflow is scheduled daily at 06:00 India Standard Time. You can also run it from Actions → Daily LeetCode Java Solver → Run workflow.
+5. Open the completed run and download the leetcode-java-daily-solution artifact. The Markdown report records the submission result when available.
 
-The workflow is scheduled daily at **06:00 India Standard Time**. GitHub scheduled workflows may start late, and public-repository schedules can be subject to GitHub limits.
+## Automatic submission notes
 
-## Important limitations
+- When both LeetCode secrets are present, the agent extracts the Java code block, submits it to LeetCode, and polls the judge result.
+- If either secret is missing, it generates the solution but skips submission.
+- LeetCode's submission endpoints are undocumented and may change; authentication may expire and require renewing secrets.
+- AI-generated code may be wrong. Submission is automatic and can use a daily attempt; review the report and LeetCode result when possible. An Accepted result is only recorded when LeetCode reports it.
+- This project does not guarantee hidden-test correctness or LeetCode availability.
 
-- This generates a proposed solution; it does not run LeetCode's hidden test cases or submit to your LeetCode account.
-- Check the solution and LeetCode's current rules before submitting. No acceptance is guaranteed.
-- Gemini API free-tier availability and quotas depend on Google's current terms and your account.
-- Keep `GEMINI_API_KEY` in GitHub Secrets. Never commit it into a file or share it publicly.
+## Security
+
+- Keep GEMINI_API_KEY, LEETCODE_SESSION, and LEETCODE_CSRF_TOKEN in GitHub Secrets only.
+- Treat LeetCode session/CSRF values like passwords. Never share them with anyone or commit them into repository files.
+- If a session secret may have leaked, sign out of LeetCode to invalidate sessions and configure new secrets.
+- Gemini API free-tier availability and quotas depend on Google's current terms and account.
