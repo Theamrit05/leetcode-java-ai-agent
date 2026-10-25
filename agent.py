@@ -179,7 +179,9 @@ def submit_to_leetcode(problem, java_code):
         if status and status not in ("Pending", "STARTED", "PENDING", "Judging"):
             result = {"status": status, "submission_id": submission_id}
             if status != "Accepted":
-                result["details"] = last_status.get("full_compile_error") or last_status.get("runtime_error") or status
+                feedback_fields = ("full_compile_error", "runtime_error", "last_testcase", "expected_output", "code_output", "std_output", "status_runtime")
+                feedback = {key: last_status[key] for key in feedback_fields if last_status.get(key)}
+                result["details"] = json.dumps(feedback, ensure_ascii=False)[:5000] if feedback else status
             return result
     return {"status": "Timed out waiting for judge", "submission_id": submission_id,
             "details": json.dumps(last_status)[:1000]}
@@ -322,6 +324,7 @@ def main():
                    "Ten randomly selected unsolved Easy/Medium problems with AI-generated Java solutions.",
                    ("This run attempts real LeetCode submissions and records the judge result." if SUBMIT_TO_LEETCODE else "Submission is disabled; solutions are generated for review."), ""]
     failures = []
+    judge_counts = {}
     for number, item in enumerate(problems, start=1):
         try:
             problem = get_problem_details(item)
@@ -359,12 +362,18 @@ def main():
                         file.write(f"**Judge details:** {submission['details']}\n\n")
                 file.write(answer + "\n")
             result_label = submission["status"] if submission else "Generated only"
+            if submission:
+                judge_counts[result_label] = judge_counts.get(result_label, 0) + 1
             index_lines.append(f"{number}. [{problem['title']}]({problem['url']}) — {problem['difficulty']} — **{result_label}** — [solution file]({os.path.basename(path)})")
             print(f"Saved: {path}")
         except Exception as exc:
             failures.append(f"{number}. {item.get('title', item.get('titleSlug', 'Unknown'))}: {exc}")
             print(f"Problem {number} failed: {exc}")
-    index_lines.extend(["", f"**Completed:** {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN}"])
+    index_lines.extend(["", f"**Generated reports:** {PROBLEMS_PER_RUN - len(failures)}/{PROBLEMS_PER_RUN}"])
+    if SUBMIT_TO_LEETCODE:
+        index_lines.extend(["", "## Actual LeetCode judge results"])
+        index_lines.extend([f"- **{status}:** {count}" for status, count in sorted(judge_counts.items())] or ["- No judge results recorded."])
+        index_lines.append("- GitHub Actions success means the workflow finished; it does not mean every submission was Accepted.")
     if failures:
         index_lines.extend(["", "## Problems that failed to generate", *[f"- {failure}" for failure in failures]])
     with open(f"output/{date}-index.md", "w", encoding="utf-8") as file:
