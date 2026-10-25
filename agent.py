@@ -261,37 +261,45 @@ Problem statement:
 
 
 
-def repair_with_ollama(problem, previous_answer, compile_error, attempt):
-    """Ask the model to repair a failed submission using LeetCode's actual judge feedback."""
+def repair_with_ollama(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
+    """Repair a failed solution using LeetCode judge feedback; no guarantee of acceptance."""
     api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OLLAMA_API_KEY is missing.")
     model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b")
     prompt = f"""
-Your previous Java solution for this LeetCode problem failed to compile.
-Repair it using the exact compiler feedback below. Return the complete corrected solution
-in exactly one ```java code block. Preserve LeetCode's exact class name and method/constructor signatures from the starter template. For design problems, implement the named class rather than class Solution. Do not include main(), prose inside the code block, or tests.
+The previous Java submission failed with status: {failure_status}.
+Produce a genuinely corrected solution, not a description of the fix. Return exactly one
+complete Java code block and no other code block. Preserve the exact public class name and
+all method/constructor signatures required by the starter template. Treat the starter template
+as authoritative. Do not include main(), package declarations, markdown inside the code block,
+or invented helper APIs. For algorithm problems use class Solution only when the starter does.
+For design problems implement the exact named class and every required constructor/method.
+Check edge cases, integer bounds, empty inputs, duplicates, and algorithmic complexity.
 
-Problem: {problem['title']}
+Title: {problem['title']}
 Difficulty: {problem['difficulty']}
-Starter template:
+Starter template (follow exactly):
 {problem['java_template'] or '(not provided)'}
 
-Problem statement:
+Full problem statement:
 {problem['statement_text']}
 
 Previous answer:
 {previous_answer}
 
-LeetCode compiler feedback:
-{compile_error}
+Judge feedback:
+{judge_feedback}
 
-This is repair attempt {attempt}. Fix the specific compilation issue; do not merely explain it.
+Repair attempt {attempt}. Re-evaluate the algorithm from the statement and examples. If the
+feedback is Wrong Answer, do not just change syntax: reconsider the logic and edge cases.
 """
     result = post_json(
         "https://ollama.com/api/chat",
         {
             "model": model,
             "messages": [
-                {"role": "system", "content": "You are an expert Java competitive programmer. Correct compilation errors precisely and follow LeetCode method signatures exactly."},
+                {"role": "system", "content": "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."},
                 {"role": "user", "content": prompt}
             ],
             "stream": False,
@@ -324,14 +332,18 @@ def main():
                 java_code = extract_java_code(answer, problem.get('java_template', ''))
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
-                # Automatically attempt up to two targeted repairs for compile errors.
+                # Retry a bounded number of times for compile/runtime/wrong-answer outcomes.
+                repairable_statuses = {"Compile Error", "Wrong Answer", "Runtime Error"}
                 for repair_attempt in range(1, 3):
-                    if submission.get("status") != "Compile Error":
+                    status = submission.get("status", "")
+                    if status not in repairable_statuses:
                         break
-                    compiler_feedback = submission.get("details") or "Compile Error (no details returned)"
-                    print(f"Compile error detected; requesting targeted repair {repair_attempt}/2...")
-                    answer = repair_with_ollama(problem, answer, compiler_feedback, repair_attempt)
-                    java_code = extract_java_code(answer, problem.get('java_template', ''))
+                    feedback = submission.get("details") or status
+                    print(f"{status} detected; requesting solution repair {repair_attempt}/2...")
+                    answer = repair_with_ollama(
+                        problem, answer, feedback, repair_attempt, failure_status=status
+                    )
+                    java_code = extract_java_code(answer, problem.get("java_template", ""))
                     submission = submit_to_leetcode(problem, java_code)
                     print(f"Judge result after repair {repair_attempt}: {submission['status']}")
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
