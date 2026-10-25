@@ -106,7 +106,9 @@ def get_problem_pool():
             f"LeetCode returned only {len(unique)} unsolved Easy/Medium questions for this account."
         )
     print(f"Found {len(unique)} unsolved Easy/Medium questions.")
-    return random.sample(list(unique.values()), PROBLEMS_PER_RUN)
+    pool = list(unique.values())
+    random.shuffle(pool)
+    return pool
 
 
 def leetcode_auth_headers():
