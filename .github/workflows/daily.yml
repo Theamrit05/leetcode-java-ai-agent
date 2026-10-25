@@ -2,8 +2,8 @@ name: Daily 10 Random LeetCode Java Solvers
 
 on:
   schedule:
-    # Runs daily at 14:30 UTC (20:00 IST)
-    - cron: "30 14 * * *"
+    # Primary run at 20:00 IST, automatic fallback at 21:00 IST if the primary schedule is delayed/missed.
+    - cron: "30 14,15 * * *"
   workflow_dispatch:
 
 permissions:
