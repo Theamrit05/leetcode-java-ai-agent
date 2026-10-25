@@ -151,7 +151,14 @@ def extract_java_code(answer, java_template=""):
     expected = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", java_template or "")
     actual = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", code)
     if expected and actual and expected.group(1) != actual.group(1):
-        raise RuntimeError(f"Java class name mismatch: expected {expected.group(1)}, got {actual.group(1)}.")
+        old_name = actual.group(1)
+        required_name = expected.group(1)
+        # Match the class declaration and constructor identifiers to LeetCode's starter template.
+        code = code.replace("class " + old_name, "class " + required_name)
+        code = code.replace("public " + old_name + "(", "public " + required_name + "(")
+        code = code.replace("protected " + old_name + "(", "protected " + required_name + "(")
+        code = code.replace("private " + old_name + "(", "private " + required_name + "(")
+        print(f"Adjusted generated class name to match starter template: {required_name}.")
     return code
 
 
