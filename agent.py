@@ -268,18 +268,18 @@ def gemini_generate(prompt, system_instruction):
 
 def solve_with_gemini(problem):
     prompt = f"""
-Solve this LeetCode problem in Java. Optimize for correctness on hidden tests and efficient runtime.
-Before writing the final answer, silently do a rigorous contest-editorial review:
-1. Identify constraints and derive the intended optimal algorithm.
-2. Check the proof of correctness and time/space complexity.
-3. Walk through examples and relevant edge cases: empty/singleton input, duplicates, boundaries,
-   overflow, negative values, disconnected graphs, and maximum constraints.
-4. Search for counterexamples to your own approach and fix any flaw before answering.
-5. Ensure Java syntax, imports, types, and exact LeetCode method signatures compile.
-Do not output this checklist or multiple alternative solutions.
+You must read and understand the ENTIRE problem statement before writing code. Do not jump to coding after reading only the title or first paragraph.
 
-Return a concise explanation, algorithm, time and space complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick java code block. Preserve the exact class name and method/constructor signatures in the supplied starter template. For design problems, implement the named class (such as LRUCache or Trie), not class Solution. For ordinary algorithm problems, use class Solution if the template does. Do not include main().
-Do not claim the code has been tested or accepted.
+Required private workflow (do not print these steps):
+1. Parse the full statement, including every constraint, input/output definition, note, example, and special rule.
+2. Infer the exact task and return value. Distinguish what is explicitly required from assumptions; do not invent requirements.
+3. Use examples as checks, not as a replacement for the full specification. Manually trace each example.
+4. Derive an algorithm that satisfies the largest stated constraints. Verify its invariant/proof and time/space complexity.
+5. Test the reasoning mentally against relevant edge cases and counterexamples, especially boundaries, empty/singleton inputs, duplicates, negative values, overflow, ties, and special cases where applicable.
+6. Match the supplied Java starter template exactly: class name, method name, parameter types/order, return type, constructor/API for design questions. Use only allowed imports/APIs; do not add main() or package declarations.
+7. Only after all checks, write the final code. If any part of the statement is ambiguous, choose the interpretation best supported by the wording and examples; do not silently change the problem.
+
+Return a concise explanation, algorithm, time and space complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick java code block. No alternative solutions, pseudocode in place of code, or extra class unless required. Do not claim the code has been tested or accepted.
 
 Title: {problem['title']}
 Difficulty: {problem['difficulty']}
@@ -288,7 +288,7 @@ Topics: {', '.join(problem['topics'])}
 Java starter template:
 {problem['java_template'] or '(not provided)'}
 
-Problem statement:
+FULL PROBLEM STATEMENT (read every part carefully):
 {problem['statement_text']}
 """
     return gemini_generate(
