@@ -240,36 +240,33 @@ def get_problem_details(item):
     }
 
 
-def openrouter_chat(messages):
-    """Call OpenRouter's OpenAI-compatible Chat Completions API."""
-    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+def gemini_generate(prompt, system_instruction):
+    """Call the Gemini API using the official generateContent REST endpoint."""
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+        raise RuntimeError("GEMINI_API_KEY is missing. Add it in GitHub Actions repository secrets.")
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.2,
-        "stream": False,
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
     }
     result = post_json(
-        "https://openrouter.ai/api/v1/chat/completions",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
         payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/Theamrit05/leetcode-java-ai-agent",
-            "X-Title": "LeetCode Java AI Agent",
-        },
+        headers={"x-goog-api-key": api_key},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    choices = result.get("choices") or []
-    answer = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+    candidates = result.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+    answer = "\\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
     if not answer:
-        raise RuntimeError("OpenRouter returned an empty response: " + json.dumps(result)[:1200])
+        feedback = result.get("promptFeedback") or {}
+        raise RuntimeError("Gemini returned an empty response: " + json.dumps(feedback or result)[:1200])
     return answer
 
 
-def solve_with_openrouter(problem):
+def solve_with_gemini(problem):
     prompt = f"""
 Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
 complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
@@ -286,13 +283,13 @@ Java starter template:
 Problem statement:
 {problem['statement_text']}
 """
-    return openrouter_chat([
-        {"role": "system", "content": "You are an expert competitive programmer. Produce correct, efficient Java solutions matching LeetCode's exact starter template and method signatures."},
-        {"role": "user", "content": prompt},
-    ])
+    return gemini_generate(
+        prompt,
+        "You are an expert competitive programmer. Produce correct, efficient Java solutions matching LeetCode's exact starter template and method signatures."
+    )
 
 
-def repair_with_openrouter(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
+def repair_with_gemini(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
     """Repair a failed solution using LeetCode judge feedback."""
     prompt = f"""
 The previous Java submission failed with status: {failure_status}.
@@ -321,10 +318,10 @@ Judge feedback:
 Repair attempt {attempt}. Re-evaluate the algorithm from the statement and examples. If the
 feedback is Wrong Answer, reconsider the logic and edge cases.
 """
-    return openrouter_chat([
-        {"role": "system", "content": "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."},
-        {"role": "user", "content": prompt},
-    ])
+    return gemini_generate(
+        prompt,
+        "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."
+    )
 
 def main():
     os.makedirs("output", exist_ok=True)
@@ -359,7 +356,7 @@ def main():
         try:
             problem = get_problem_details(item)
             print(f"[Candidate {attempted}/{max_candidates}; Accepted {accepted}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
-            answer = solve_with_openrouter(problem)
+            answer = solve_with_gemini(problem)
 
             if SUBMIT_TO_LEETCODE:
                 # If the model returns prose/invalid formatting, ask it again before
@@ -372,7 +369,7 @@ def main():
                         if format_attempt >= 3:
                             raise
                         print(f"Invalid Java response; regenerating solution {format_attempt + 1}/3: {format_error}")
-                        answer = solve_with_openrouter(problem)
+                        answer = solve_with_gemini(problem)
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
@@ -382,7 +379,7 @@ def main():
                         break
                     feedback = submission.get("details") or submission["status"]
                     print(f"{submission['status']} detected; requesting repair {repair_attempt}/2...")
-                    answer = repair_with_openrouter(
+                    answer = repair_with_gemini(
                         problem, answer, feedback, repair_attempt,
                         failure_status=submission["status"]
                     )
