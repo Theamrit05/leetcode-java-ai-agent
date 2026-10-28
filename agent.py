@@ -240,11 +240,36 @@ def get_problem_details(item):
     }
 
 
-def solve_with_ollama(problem):
-    api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+def openrouter_chat(messages):
+    """Call OpenRouter's OpenAI-compatible Chat Completions API."""
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("OLLAMA_API_KEY is missing. Add it in repository Actions secrets.")
-    model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b")
+        raise RuntimeError("OPENROUTER_API_KEY is missing. Add it in GitHub Actions repository secrets.")
+    model = os.environ.get("OPENROUTER_MODEL", "openrouter/free")
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.2,
+        "stream": False,
+    }
+    result = post_json(
+        "https://openrouter.ai/api/v1/chat/completions",
+        payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/Theamrit05/leetcode-java-ai-agent",
+            "X-Title": "LeetCode Java AI Agent",
+        },
+        timeout=REQUEST_TIMEOUT_SECONDS,
+    )
+    choices = result.get("choices") or []
+    answer = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+    if not answer:
+        raise RuntimeError("OpenRouter returned an empty response: " + json.dumps(result)[:1200])
+    return answer
+
+
+def solve_with_openrouter(problem):
     prompt = f"""
 Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
 complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
@@ -261,35 +286,14 @@ Java starter template:
 Problem statement:
 {problem['statement_text']}
 """
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an expert competitive programmer. Produce correct, efficient Java solutions that match LeetCode's exact method signature."},
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-        "think": False
-    }
-    result = post_json(
-        "https://ollama.com/api/chat",
-        payload,
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    message = result.get("message") or {}
-    answer = (message.get("content") or "").strip()
-    if not answer:
-        raise RuntimeError("Ollama returned an empty answer: " + json.dumps(result)[:1000])
-    return answer
+    return openrouter_chat([
+        {"role": "system", "content": "You are an expert competitive programmer. Produce correct, efficient Java solutions matching LeetCode's exact starter template and method signatures."},
+        {"role": "user", "content": prompt},
+    ])
 
 
-
-def repair_with_ollama(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
-    """Repair a failed solution using LeetCode judge feedback; no guarantee of acceptance."""
-    api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OLLAMA_API_KEY is missing.")
-    model = os.environ.get("OLLAMA_MODEL", "gpt-oss:120b")
+def repair_with_openrouter(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
+    """Repair a failed solution using LeetCode judge feedback."""
     prompt = f"""
 The previous Java submission failed with status: {failure_status}.
 Produce a genuinely corrected solution, not a description of the fix. Return exactly one
@@ -315,26 +319,12 @@ Judge feedback:
 {judge_feedback}
 
 Repair attempt {attempt}. Re-evaluate the algorithm from the statement and examples. If the
-feedback is Wrong Answer, do not just change syntax: reconsider the logic and edge cases.
+feedback is Wrong Answer, reconsider the logic and edge cases.
 """
-    result = post_json(
-        "https://ollama.com/api/chat",
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."},
-                {"role": "user", "content": prompt}
-            ],
-            "stream": False,
-            "think": False
-        },
-        headers={"Authorization": f"Bearer {api_key}"},
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
-    answer = ((result.get("message") or {}).get("content") or "").strip()
-    if not answer:
-        raise RuntimeError("Ollama returned an empty repair response.")
-    return answer
+    return openrouter_chat([
+        {"role": "system", "content": "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."},
+        {"role": "user", "content": prompt},
+    ])
 
 def main():
     os.makedirs("output", exist_ok=True)
@@ -369,7 +359,7 @@ def main():
         try:
             problem = get_problem_details(item)
             print(f"[Candidate {attempted}/{max_candidates}; Accepted {accepted}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
-            answer = solve_with_ollama(problem)
+            answer = solve_with_openrouter(problem)
 
             if SUBMIT_TO_LEETCODE:
                 # If the model returns prose/invalid formatting, ask it again before
@@ -382,7 +372,7 @@ def main():
                         if format_attempt >= 3:
                             raise
                         print(f"Invalid Java response; regenerating solution {format_attempt + 1}/3: {format_error}")
-                        answer = solve_with_ollama(problem)
+                        answer = solve_with_openrouter(problem)
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
@@ -392,7 +382,7 @@ def main():
                         break
                     feedback = submission.get("details") or submission["status"]
                     print(f"{submission['status']} detected; requesting repair {repair_attempt}/2...")
-                    answer = repair_with_ollama(
+                    answer = repair_with_openrouter(
                         problem, answer, feedback, repair_attempt,
                         failure_status=submission["status"]
                     )
