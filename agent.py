@@ -14,7 +14,7 @@ REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 3
 PROBLEMS_PER_RUN = 10
 SUBMIT_TO_LEETCODE = os.getenv("SUBMIT_TO_LEETCODE", "true").lower() == "true"
-LEETCODE_SUBMISSION_TIMEOUT = 90
+LEETCODE_SUBMISSION_TIMEOUT = 60
 
 
 class ProblemTextParser(HTMLParser):
@@ -268,9 +268,17 @@ def gemini_generate(prompt, system_instruction):
 
 def solve_with_gemini(problem):
     prompt = f"""
-Solve this LeetCode problem in Java. Return a concise explanation, algorithm, time and space
-complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick
-java code block. Preserve the exact class name and method/constructor signatures in the supplied starter template. For design problems, implement the named class (such as LRUCache or Trie), not class Solution. For ordinary algorithm problems, use class Solution if the template does. Do not include main().
+Solve this LeetCode problem in Java. Optimize for correctness on hidden tests and efficient runtime.
+Before writing the final answer, silently do a rigorous contest-editorial review:
+1. Identify constraints and derive the intended optimal algorithm.
+2. Check the proof of correctness and time/space complexity.
+3. Walk through examples and relevant edge cases: empty/singleton input, duplicates, boundaries,
+   overflow, negative values, disconnected graphs, and maximum constraints.
+4. Search for counterexamples to your own approach and fix any flaw before answering.
+5. Ensure Java syntax, imports, types, and exact LeetCode method signatures compile.
+Do not output this checklist or multiple alternative solutions.
+
+Return a concise explanation, algorithm, time and space complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick java code block. Preserve the exact class name and method/constructor signatures in the supplied starter template. For design problems, implement the named class (such as LRUCache or Trie), not class Solution. For ordinary algorithm problems, use class Solution if the template does. Do not include main().
 Do not claim the code has been tested or accepted.
 
 Title: {problem['title']}
@@ -285,15 +293,14 @@ Problem statement:
 """
     return gemini_generate(
         prompt,
-        "You are an expert competitive programmer. Produce correct, efficient Java solutions matching LeetCode's exact starter template and method signatures."
+        "You are a senior competitive-programming engineer specializing in correct LeetCode Java submissions. Prefer the proven optimal algorithm, carefully verify invariants and edge cases before finalizing, and match the exact starter template. Correctness matters more than a rushed guess."
     )
 
 
 def repair_with_gemini(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
     """Repair a failed solution using LeetCode judge feedback."""
     prompt = f"""
-The previous Java submission failed with status: {failure_status}.
-Produce a genuinely corrected solution, not a description of the fix. Return exactly one
+The previous Java submission failed with status: {failure_status}. Diagnose the specific root cause from judge feedback and produce a corrected solution; do not repeat the previous algorithm if its logic is wrong. Return exactly one
 complete Java code block and no other code block. Preserve the exact public class name and
 all method/constructor signatures required by the starter template. Treat the starter template
 as authoritative. Do not include main(), package declarations, markdown inside the code block,
@@ -320,7 +327,7 @@ feedback is Wrong Answer, reconsider the logic and edge cases.
 """
     return gemini_generate(
         prompt,
-        "You are a meticulous Java LeetCode specialist. Output one complete, compilable submission matching the exact supplied starter template. Never invent class or method names."
+        "You are a meticulous senior Java competitive programmer. Diagnose judge feedback, challenge the previous reasoning, mentally test edge cases, and output one complete corrected submission matching the exact starter template. Never invent class or method names."
     )
 
 def main():
@@ -374,7 +381,8 @@ def main():
                 print(f"Judge result: {submission['status']}")
 
                 repairable_statuses = {"Compile Error", "Wrong Answer", "Runtime Error"}
-                for repair_attempt in range(1, 3):
+                # One targeted repair keeps latency down; avoid repeatedly burning time on blind retries.
+                for repair_attempt in range(1, 2):
                     if submission.get("status") not in repairable_statuses:
                         break
                     feedback = submission.get("details") or submission["status"]
