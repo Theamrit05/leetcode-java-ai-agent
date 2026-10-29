@@ -34,7 +34,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_MODEL: openai/gpt-oss-20b
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3.5-flash
+          GEMINI_MODEL: gemini-3.8-flash
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_MODEL: openai/gpt-oss-20b
           LEETCODE_SESSION: ${{ secrets.LEETCODE_SESSION }}
