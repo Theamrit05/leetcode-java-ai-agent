@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 3
 PROBLEMS_PER_RUN = 10
@@ -245,7 +244,7 @@ def groq_generate(prompt, system_instruction):
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
     payload = {
         "model": model,
         "messages": [
@@ -253,7 +252,7 @@ def groq_generate(prompt, system_instruction):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
-        "max_tokens": 8192,
+        "max_completion_tokens": 8192,
     }
     result = post_json(
         "https://api.groq.com/openai/v1/chat/completions",
