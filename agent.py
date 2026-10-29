@@ -237,11 +237,11 @@ def get_problem_details(item):
 
 
 def groq_generate(prompt, system_instruction):
-    """Call Groq's OpenAI-compatible chat completions API."""
+    """Call Groq; choose a model with enough available TPM and avoid wasting retries on quota errors."""
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GROQ_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
     payload = {
         "model": model,
         "messages": [
@@ -249,7 +249,7 @@ def groq_generate(prompt, system_instruction):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
-        "max_completion_tokens": 8192,
+        "max_completion_tokens": 4096,
     }
     result = post_json(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -369,7 +369,7 @@ def main():
             if any(term in lowered for term in (
                 "401", "unauthorized", "invalid api key",
                 "quota exceeded", "insufficient quota", "rate limit",
-                "429", "leetcodesession", "csrf token"
+                "429", "tokens per minute", "tokens per day", "leetcodesession", "csrf token"
             )):
                 print("Stopping early: an authentication or provider-limit error needs attention.")
                 break
