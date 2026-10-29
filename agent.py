@@ -240,94 +240,62 @@ def get_problem_details(item):
     }
 
 
-def gemini_generate(prompt, system_instruction):
-    """Call the Gemini API using the official generateContent REST endpoint."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+def groq_generate(prompt, system_instruction):
+    """Call Groq's OpenAI-compatible chat completions API."""
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        raise RuntimeError("GROQ_API_KEY is missing. Add it in GitHub Actions repository secrets.")
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     payload = {
-        "systemInstruction": {"parts": [{"text": system_instruction}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 8192,
     }
     result = post_json(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        "https://api.groq.com/openai/v1/chat/completions",
         payload,
-        headers={"x-goog-api-key": api_key},
+        headers={"Authorization": f"Bearer {api_key}"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
-    candidates = result.get("candidates") or []
-    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
-    answer = "\\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+    choices = result.get("choices") or []
+    answer = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
     if not answer:
-        feedback = result.get("promptFeedback") or {}
-        raise RuntimeError("Gemini returned an empty response: " + json.dumps(feedback or result)[:1200])
+        raise RuntimeError("Groq returned an empty response: " + json.dumps(result)[:1200])
     return answer
 
 
-def solve_with_gemini(problem):
+def solve_with_groq(problem):
     prompt = f"""
-You must read and understand the ENTIRE problem statement before writing code. Do not jump to coding after reading only the title or first paragraph.
+Read the FULL problem statement carefully before coding. This is a production-quality LeetCode submission; optimize for a correct FIRST submission.
 
-Required private workflow (do not print these steps):
-1. Parse the full statement, including every constraint, input/output definition, note, example, and special rule.
-2. Infer the exact task and return value. Distinguish what is explicitly required from assumptions; do not invent requirements.
-3. Use examples as checks, not as a replacement for the full specification. Manually trace each example.
-4. Derive an algorithm that satisfies the largest stated constraints. Verify its invariant/proof and time/space complexity.
-5. Test the reasoning mentally against relevant edge cases and counterexamples, especially boundaries, empty/singleton inputs, duplicates, negative values, overflow, ties, and special cases where applicable.
-6. Match the supplied Java starter template exactly: class name, method name, parameter types/order, return type, constructor/API for design questions. Use only allowed imports/APIs; do not add main() or package declarations.
-7. Only after all checks, write the final code. If any part of the statement is ambiguous, choose the interpretation best supported by the wording and examples; do not silently change the problem.
+Privately complete this checklist before returning code:
+1. Read every sentence, constraint, example, note, and special condition. Do not infer the task from the title alone.
+2. Restate the exact required behavior internally; identify input/output semantics and any tricky wording.
+3. Derive an algorithm that meets maximum constraints; verify its invariant/proof and complexity.
+4. Trace every supplied example and test likely hidden edge cases mentally: boundaries, empty/singleton data, duplicates, negatives, overflow, ties, and maximum sizes where relevant.
+5. Actively search for a counterexample to the chosen algorithm and fix it before answering.
+6. Check Java types, imports, null/empty behavior, integer overflow, and exact starter-template class/method/constructor signature.
+7. For design questions implement the exact required class and all methods. For standard problems follow the supplied class/method template exactly.
+8. Do not output main(), package declarations, invented APIs, multiple alternatives, or pseudocode instead of code.
 
-Return a concise explanation, algorithm, time and space complexity, and exactly one complete LeetCode Java submission inside a standard triple-backtick java code block. No alternative solutions, pseudocode in place of code, or extra class unless required. Do not claim the code has been tested or accepted.
+Return one concise explanation, complexity, and exactly one complete Java code block. No second candidate solution. Never claim the code was executed or accepted.
 
 Title: {problem['title']}
 Difficulty: {problem['difficulty']}
-URL: {problem['url']}
 Topics: {', '.join(problem['topics'])}
-Java starter template:
+Exact Java starter template:
 {problem['java_template'] or '(not provided)'}
 
-FULL PROBLEM STATEMENT (read every part carefully):
+FULL PROBLEM STATEMENT — read all of it:
 {problem['statement_text']}
 """
-    return gemini_generate(
+    return groq_generate(
         prompt,
-        "You are a senior competitive-programming engineer specializing in correct LeetCode Java submissions. Prefer the proven optimal algorithm, carefully verify invariants and edge cases before finalizing, and match the exact starter template. Correctness matters more than a rushed guess."
-    )
-
-
-def repair_with_gemini(problem, previous_answer, judge_feedback, attempt, failure_status="Compile Error"):
-    """Repair a failed solution using LeetCode judge feedback."""
-    prompt = f"""
-The previous Java submission failed with status: {failure_status}. Diagnose the specific root cause from judge feedback and produce a corrected solution; do not repeat the previous algorithm if its logic is wrong. Return exactly one
-complete Java code block and no other code block. Preserve the exact public class name and
-all method/constructor signatures required by the starter template. Treat the starter template
-as authoritative. Do not include main(), package declarations, markdown inside the code block,
-or invented helper APIs. For algorithm problems use class Solution only when the starter does.
-For design problems implement the exact named class and every required constructor/method.
-Check edge cases, integer bounds, empty inputs, duplicates, and algorithmic complexity.
-
-Title: {problem['title']}
-Difficulty: {problem['difficulty']}
-Starter template (follow exactly):
-{problem['java_template'] or '(not provided)'}
-
-Full problem statement:
-{problem['statement_text']}
-
-Previous answer:
-{previous_answer}
-
-Judge feedback:
-{judge_feedback}
-
-Repair attempt {attempt}. Re-evaluate the algorithm from the statement and examples. If the
-feedback is Wrong Answer, reconsider the logic and edge cases.
-"""
-    return gemini_generate(
-        prompt,
-        "You are a meticulous senior Java competitive programmer. Diagnose judge feedback, challenge the previous reasoning, mentally test edge cases, and output one complete corrected submission matching the exact starter template. Never invent class or method names."
+        "You are an elite competitive programmer and careful Java reviewer. Correctness is the top priority. Read the entire specification, derive and verify the optimal algorithm, test edge cases mentally, and match the exact LeetCode starter signature. Return only one final solution."
     )
 
 def main():
@@ -363,37 +331,16 @@ def main():
         try:
             problem = get_problem_details(item)
             print(f"[Candidate {attempted}/{max_candidates}; Accepted {accepted}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
-            answer = solve_with_gemini(problem)
+            answer = solve_with_groq(problem)
 
             if SUBMIT_TO_LEETCODE:
-                # If the model returns prose/invalid formatting, ask it again before
-                # abandoning this problem. This is separate from judge-based repairs.
-                for format_attempt in range(1, 4):
-                    try:
-                        java_code = extract_java_code(answer, problem.get("java_template", ""))
-                        break
-                    except RuntimeError as format_error:
-                        if format_attempt >= 3:
-                            raise
-                        print(f"Invalid Java response; regenerating solution {format_attempt + 1}/3: {format_error}")
-                        answer = solve_with_gemini(problem)
+                # Exactly one model generation and at most one LeetCode submission per problem.
+                java_code = extract_java_code(answer, problem.get("java_template", ""))
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
-                repairable_statuses = {"Compile Error", "Wrong Answer", "Runtime Error"}
-                # One targeted repair keeps latency down; avoid repeatedly burning time on blind retries.
-                for repair_attempt in range(1, 2):
-                    if submission.get("status") not in repairable_statuses:
-                        break
-                    feedback = submission.get("details") or submission["status"]
-                    print(f"{submission['status']} detected; requesting repair {repair_attempt}/2...")
-                    answer = repair_with_gemini(
-                        problem, answer, feedback, repair_attempt,
-                        failure_status=submission["status"]
-                    )
-                    java_code = extract_java_code(answer, problem.get("java_template", ""))
-                    submission = submit_to_leetcode(problem, java_code)
-                    print(f"Judge result after repair {repair_attempt}: {submission['status']}")
+                # No automatic resubmission: each candidate is submitted at most once.
+                print("Automatic repair/resubmission disabled to honor the one-submission-per-problem rule.")
 
             label = submission["status"] if submission else "Generated only"
             if submission:
