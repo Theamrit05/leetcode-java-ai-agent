@@ -236,12 +236,12 @@ def get_problem_details(item):
     }
 
 
-def groq_generate(prompt, system_instruction):
-    """Call Groq; choose a model with enough available TPM and avoid wasting retries on quota errors."""
-    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+def nvidia_generate(prompt, system_instruction):
+    """Call NVIDIA NIM's OpenAI-compatible chat completions API."""
+    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("GROQ_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
+        raise RuntimeError("NVIDIA_API_KEY is missing. Add it in GitHub Actions repository secrets.")
+    model = os.environ.get("NVIDIA_MODEL", "openai/gpt-oss-120b")
     payload = {
         "model": model,
         "messages": [
@@ -249,18 +249,19 @@ def groq_generate(prompt, system_instruction):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.1,
-        "max_completion_tokens": 4096,
+        "max_tokens": 4096,
+        "stream": False,
     }
     result = post_json(
-        "https://api.groq.com/openai/v1/chat/completions",
+        "https://integrate.api.nvidia.com/v1/chat/completions",
         payload,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choices = result.get("choices") or []
     answer = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
     if not answer:
-        raise RuntimeError("Groq returned an empty response: " + json.dumps(result)[:1200])
+        raise RuntimeError("NVIDIA NIM returned an empty response: " + json.dumps(result)[:1200])
     return answer
 
 
@@ -289,7 +290,7 @@ Exact Java starter template:
 FULL PROBLEM STATEMENT — read all of it:
 {problem['statement_text']}
 """
-    return groq_generate(
+    return nvidia_generate(
         prompt,
         "You are an elite competitive programmer and careful Java reviewer. Correctness is the top priority. Read the entire specification, derive and verify the optimal algorithm, test edge cases mentally, and match the exact LeetCode starter signature. Return only one final solution."
     )
