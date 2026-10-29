@@ -139,38 +139,35 @@ def get_solved_slugs():
 
 
 def extract_java_code(answer, java_template=""):
-    """Extract Java from fenced or unfenced model output and align the starter class name."""
+    """Find the actual Java source block, not an explanation or unrelated first code fence."""
     fence = chr(96) * 3
-    match = re.search(
-        re.escape(fence) + r"\s*(?:java|Java)?\s*\n?(.*?)" + re.escape(fence),
-        answer or "", re.IGNORECASE | re.DOTALL
+    raw_answer = (answer or "").strip()
+    fenced_blocks = re.findall(
+        re.escape(fence) + r"[^\\n]*\\n(.*?)" + re.escape(fence),
+        raw_answer, re.IGNORECASE | re.DOTALL
     )
-    if match:
-        code = match.group(1).strip()
-    else:
-        # Some model responses (especially repair responses) omit markdown fences.
-        # Accept only text that looks like Java source; never submit prose as code.
-        raw = (answer or "").strip()
-        raw = re.sub(r"^\s*(?:Here(?:'s| is) the corrected code|Corrected Java solution|Java solution)\s*:?\s*", "", raw, flags=re.I)
-        raw = re.sub(r"^\s*" + re.escape(fence) + r"(?:java)?\s*", "", raw, flags=re.I)
-        raw = re.sub(r"\s*" + re.escape(fence) + r"\s*$", "", raw)
-        if re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", raw) and (
-            "{" in raw and (";" in raw or "}" in raw)
-        ):
-            code = raw
-            print("Model omitted Java code fences; accepted validated raw Java source.")
+    # Prefer a fenced block containing a Java type declaration.
+    code = next(
+        (block.strip() for block in fenced_blocks
+         if re.search(r"\\b(class|interface|enum)\\s+[A-Za-z_$][\\w$]*", block)),
+        ""
+    )
+    if not code:
+        # Fall back to raw answer, but only if it contains recognizable Java source.
+        raw = re.sub(r"^\\s*(?:Here(?:'s| is) the corrected code|Corrected Java solution|Java solution)\\s*:?[ \\t]*", "", raw_answer, flags=re.I)
+        raw = re.sub(re.escape(fence) + r"[^\\n]*\\n?", "", raw)
+        if re.search(r"\\b(class|interface|enum)\\s+[A-Za-z_$][\\w$]*", raw) and "{" in raw:
+            code = raw.strip()
+            print("Model output had no usable Java fence; extracted recognizable Java source.")
         else:
-            raise RuntimeError("AI response did not contain a fenced Java solution or recognizable raw Java source.")
+            raise RuntimeError("AI response did not contain a Java class/interface/enum. No submission was sent.")
 
-    if not code or not re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", code):
-        raise RuntimeError("Extracted response does not contain a valid Java type declaration.")
-
-    expected = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", java_template or "")
-    actual = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", code)
+    expected = re.search(r"\\bclass\\s+([A-Za-z_$][\\w$]*)", java_template or "")
+    actual = re.search(r"\\bclass\\s+([A-Za-z_$][\\w$]*)", code)
     if expected and actual and expected.group(1) != actual.group(1):
         old_name, required_name = actual.group(1), expected.group(1)
-        code = re.sub(r"\bclass\s+" + re.escape(old_name) + r"\b", "class " + required_name, code, count=1)
-        code = re.sub(r"\b(public|protected|private)\s+" + re.escape(old_name) + r"\s*(?=\()", r"\1 " + required_name, code)
+        code = re.sub(r"\\bclass\\s+" + re.escape(old_name) + r"\\b", "class " + required_name, code, count=1)
+        code = re.sub(r"\\b(public|protected|private)\\s+" + re.escape(old_name) + r"\\s*(?=\\()", r"\\1 " + required_name, code)
         print(f"Adjusted generated class name to match starter template: {required_name}.")
     return code
 
