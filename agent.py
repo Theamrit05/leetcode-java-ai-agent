@@ -139,39 +139,37 @@ def get_solved_slugs():
 
 
 def extract_java_code(answer, java_template=""):
-    """Find the actual Java source block, not an explanation or unrelated first code fence."""
+    """Extract a Java type from model output, rejecting explanations and malformed responses."""
     fence = chr(96) * 3
     raw_answer = (answer or "").strip()
     fenced_blocks = re.findall(
-        re.escape(fence) + r"[^\\n]*\\n(.*?)" + re.escape(fence),
+        re.escape(fence) + r"[^\n]*\n(.*?)" + re.escape(fence),
         raw_answer, re.IGNORECASE | re.DOTALL
     )
-    # Prefer a fenced block containing a Java type declaration.
     code = next(
         (block.strip() for block in fenced_blocks
-         if re.search(r"\\b(class|interface|enum)\\s+[A-Za-z_$][\\w$]*", block)),
+         if re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", block)),
         ""
     )
     if not code:
-        # Fall back to raw answer, but only if it contains recognizable Java source.
-        raw = re.sub(r"^\\s*(?:Here(?:'s| is) the corrected code|Corrected Java solution|Java solution)\\s*:?[ \\t]*", "", raw_answer, flags=re.I)
-        raw = re.sub(re.escape(fence) + r"[^\\n]*\\n?", "", raw)
-        if re.search(r"\\b(class|interface|enum)\\s+[A-Za-z_$][\\w$]*", raw) and "{" in raw:
+        raw = re.sub(
+            r"^\s*(?:Here(?:'s| is) the corrected code|Corrected Java solution|Java solution)\s*:?[ \t]*",
+            "", raw_answer, flags=re.I
+        )
+        raw = re.sub(re.escape(fence) + r"[^\n]*\n?", "", raw)
+        if re.search(r"\b(class|interface|enum)\s+[A-Za-z_$][\w$]*", raw) and "{" in raw:
             code = raw.strip()
-            print("Model output had no usable Java fence; extracted recognizable Java source.")
         else:
             raise RuntimeError("AI response did not contain a Java class/interface/enum. No submission was sent.")
 
-    expected = re.search(r"\\bclass\\s+([A-Za-z_$][\\w$]*)", java_template or "")
-    actual = re.search(r"\\bclass\\s+([A-Za-z_$][\\w$]*)", code)
+    expected = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", java_template or "")
+    actual = re.search(r"\bclass\s+([A-Za-z_$][\w$]*)", code)
     if expected and actual and expected.group(1) != actual.group(1):
         old_name, required_name = actual.group(1), expected.group(1)
-        code = re.sub(r"\\bclass\\s+" + re.escape(old_name) + r"\\b", "class " + required_name, code, count=1)
-        code = re.sub(r"\\b(public|protected|private)\\s+" + re.escape(old_name) + r"\\s*(?=\\()", r"\\1 " + required_name, code)
+        code = re.sub(r"\bclass\s+" + re.escape(old_name) + r"\b", "class " + required_name, code, count=1)
+        code = re.sub(r"\b(public|protected|private)\s+" + re.escape(old_name) + r"\s*(?=\()", r"\1 " + required_name, code)
         print(f"Adjusted generated class name to match starter template: {required_name}.")
     return code
-
-
 def submit_to_leetcode(problem, java_code):
     headers = {**leetcode_auth_headers(), "Content-Type": "application/json"}
     payload = {"lang": "java", "question_id": str(problem["question_id"]), "typed_code": java_code}
@@ -236,12 +234,7 @@ def get_problem_details(item):
     }
 
 
-def nvidia_generate(prompt, system_instruction):
-    """Call NVIDIA NIM's OpenAI-compatible chat completions API."""
-    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("NVIDIA_API_KEY is missing. Add it in GitHub Actions repository secrets.")
-    model = os.environ.get("NVIDIA_MODEL", "openai/gpt-oss-120b")
+def openai_compatible_generate(provider, api_key, model, prompt, system_instruction, endpoint):
     payload = {
         "model": model,
         "messages": [
@@ -253,33 +246,82 @@ def nvidia_generate(prompt, system_instruction):
         "stream": False,
     }
     result = post_json(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        payload,
+        endpoint, payload,
         headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choices = result.get("choices") or []
-    answer = ((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+    message = (choices[0].get("message") or {}) if choices else {}
+    answer = (message.get("content") or "").strip()
+    # Some reasoning models put the usable text in a separate field.
+    if not answer and isinstance(message.get("reasoning"), str):
+        answer = message["reasoning"].strip()
     if not answer:
-        raise RuntimeError("NVIDIA NIM returned an empty response: " + json.dumps(result)[:1200])
+        raise RuntimeError(f"{provider} returned no usable message content: " + json.dumps(result)[:1200])
     return answer
 
 
-def solve_with_groq(problem):
+def nvidia_generate(prompt, system_instruction):
+    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY is not configured.")
+    return openai_compatible_generate(
+        "NVIDIA", api_key, os.environ.get("NVIDIA_MODEL", "openai/gpt-oss-20b"),
+        prompt, system_instruction, "https://integrate.api.nvidia.com/v1/chat/completions"
+    )
+
+
+def groq_generate(prompt, system_instruction):
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured.")
+    return openai_compatible_generate(
+        "Groq", api_key, os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b"),
+        prompt, system_instruction, "https://api.groq.com/openai/v1/chat/completions"
+    )
+
+
+def gemini_generate(prompt, system_instruction):
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_instruction}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
+    }
+    result = post_json(endpoint, payload, headers={"Accept": "application/json"}, timeout=REQUEST_TIMEOUT_SECONDS)
+    candidates = result.get("candidates") or []
+    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+    answer = "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+    if not answer:
+        raise RuntimeError("Gemini returned no usable text: " + json.dumps(result)[:1200])
+    return answer
+
+
+def openrouter_generate(prompt, system_instruction):
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured.")
+    return openai_compatible_generate(
+        "OpenRouter", api_key, os.environ.get("OPENROUTER_MODEL", "openai/gpt-oss-20b"),
+        prompt, system_instruction, "https://openrouter.ai/api/v1/chat/completions"
+    )
+
+
+def solve_with_ai(problem):
     prompt = f"""
-Read the FULL problem statement carefully before coding. This is a production-quality LeetCode submission; optimize for a correct FIRST submission.
+Read the FULL problem statement carefully before coding. Optimize for a correct first submission.
+1. Read every sentence, constraint, example, note, and special condition.
+2. Derive an algorithm that meets maximum constraints and verify its invariant and complexity.
+3. Trace supplied examples and mentally test edge cases, boundaries, duplicates, negatives, overflow, and maximum sizes.
+4. Check Java types, imports, overflow, and the exact starter-template signature.
+5. For design questions implement the exact required class and all methods.
+6. Do not output main(), package declarations, invented APIs, multiple alternatives, or pseudocode.
 
-Privately complete this checklist before returning code:
-1. Read every sentence, constraint, example, note, and special condition. Do not infer the task from the title alone.
-2. Restate the exact required behavior internally; identify input/output semantics and any tricky wording.
-3. Derive an algorithm that meets maximum constraints; verify its invariant/proof and complexity.
-4. Trace every supplied example and test likely hidden edge cases mentally: boundaries, empty/singleton data, duplicates, negatives, overflow, ties, and maximum sizes where relevant.
-5. Actively search for a counterexample to the chosen algorithm and fix it before answering.
-6. Check Java types, imports, null/empty behavior, integer overflow, and exact starter-template class/method/constructor signature.
-7. For design questions implement the exact required class and all methods. For standard problems follow the supplied class/method template exactly.
-8. Do not output main(), package declarations, invented APIs, multiple alternatives, or pseudocode instead of code.
-
-Return one concise explanation, complexity, and exactly one complete Java code block. No second candidate solution. Never claim the code was executed or accepted.
+Return a concise explanation, complexity, and exactly one complete Java code block. Never claim the code was executed or accepted.
 
 Title: {problem['title']}
 Difficulty: {problem['difficulty']}
@@ -287,14 +329,34 @@ Topics: {', '.join(problem['topics'])}
 Exact Java starter template:
 {problem['java_template'] or '(not provided)'}
 
-FULL PROBLEM STATEMENT — read all of it:
+FULL PROBLEM STATEMENT:
 {problem['statement_text']}
 """
-    return nvidia_generate(
-        prompt,
-        "You are an elite competitive programmer and careful Java reviewer. Correctness is the top priority. Read the entire specification, derive and verify the optimal algorithm, test edge cases mentally, and match the exact LeetCode starter signature. Return only one final solution."
+    system_instruction = (
+        "You are an elite competitive programmer and careful Java reviewer. "
+        "Correctness is the top priority. Match the exact LeetCode starter signature. "
+        "Return one final solution with one Java code block."
     )
-
+    providers = [
+        ("NVIDIA", nvidia_generate),
+        ("Groq", groq_generate),
+        ("Gemini", gemini_generate),
+        ("OpenRouter", openrouter_generate),
+    ]
+    errors = []
+    for name, generate in providers:
+        try:
+            print(f"Trying AI provider: {name}")
+            answer = generate(prompt, system_instruction)
+            # Validate the response before selecting the provider; malformed output falls through.
+            extract_java_code(answer, problem.get("java_template", ""))
+            print(f"AI provider succeeded: {name}")
+            return answer
+        except Exception as exc:
+            message = str(exc)
+            errors.append(f"{name}: {message[:500]}")
+            print(f"AI provider failed ({name}): {message[:500]}")
+    raise RuntimeError("All configured AI providers failed. " + " | ".join(errors))
 def main():
     os.makedirs("output", exist_ok=True)
     date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -328,7 +390,7 @@ def main():
         try:
             problem = get_problem_details(item)
             print(f"[Candidate {attempted}/{max_candidates}; Accepted {accepted}/{PROBLEMS_PER_RUN}] Solving: {problem['title']} ({problem['difficulty']})")
-            answer = solve_with_groq(problem)
+            answer = solve_with_ai(problem)
 
             if SUBMIT_TO_LEETCODE:
                 # Exactly one model generation and at most one LeetCode submission per problem.
