@@ -15,6 +15,8 @@ LEETCODE_GRAPHQL = "https://leetcode.com/graphql"
 REQUEST_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 3
 PROBLEMS_PER_RUN = 10
+MAX_SUBMISSIONS_PER_RUN = 10
+MAX_CONSECUTIVE_FAILURES = 3
 SUBMIT_TO_LEETCODE = os.getenv("SUBMIT_TO_LEETCODE", "true").lower() == "true"
 LEETCODE_SUBMISSION_TIMEOUT = 60
 
@@ -179,7 +181,7 @@ def compile_java_code(java_code):
         source = java_code.strip()
         if "import java.util.*;" not in source:
             source = "import java.util.*;\n" + source
-        class_match = re.search(r"\\b(?:public\\s+)?class\\s+([A-Za-z_$][\\w$]*)", source)
+        class_match = re.search(r"\b(?:public\s+)?class\s+([A-Za-z_$][\w$]*)", source)
         if not class_match:
             raise RuntimeError("Pre-submit check failed: no Java class declaration.")
         source_path = Path(temp_dir) / (class_match.group(1) + ".java")
@@ -398,6 +400,9 @@ def main():
     judge_counts = {}
     failures = []
     seen_slugs = set()
+    submissions_made = 0
+    consecutive_failures = 0
+    skipped_solved = 0
 
     for item in candidates:
         if accepted >= PROBLEMS_PER_RUN:
@@ -406,6 +411,14 @@ def main():
         if not slug or slug in seen_slugs:
             continue
         seen_slugs.add(slug)
+        if submissions_made >= MAX_SUBMISSIONS_PER_RUN:
+            print("Stopping: per-run submission cap reached.")
+            break
+        # Refresh solved status immediately before spending a submission.
+        if slug in get_solved_slugs():
+            skipped_solved += 1
+            print(f"Skipping {slug}: already solved on the account.")
+            continue
         attempted += 1
         problem = None
         answer = ""
@@ -420,6 +433,9 @@ def main():
                 # Exactly one model generation and at most one LeetCode submission per problem.
                 java_code = extract_java_code(answer, problem.get("java_template", ""))
                 compile_java_code(java_code)
+                if submissions_made >= MAX_SUBMISSIONS_PER_RUN:
+                    raise RuntimeError("Submission cap reached; no submission sent.")
+                submissions_made += 1
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
@@ -431,6 +447,7 @@ def main():
                 judge_counts[label] = judge_counts.get(label, 0) + 1
             if SUBMIT_TO_LEETCODE and label == "Accepted":
                 accepted += 1
+            consecutive_failures = 0
 
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", problem["slug"])
             path = f"output/{date}-{attempted:02d}-{safe_slug}.md"
@@ -450,6 +467,7 @@ def main():
             error_text = str(exc)
             title = (problem or {}).get("title", item.get("title", slug or "Unknown"))
             failures.append(f"{title}: {error_text}")
+            consecutive_failures += 1
             print(f"Candidate failed: {title}: {error_text}")
             # Don't burn the remaining quota if credentials are invalid or the model
             # provider explicitly rejects/rate-limits requests.
@@ -461,6 +479,12 @@ def main():
             )):
                 print("Stopping early: an authentication or provider-limit error needs attention.")
                 break
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"Stopping after {consecutive_failures} consecutive candidate failures.")
+                # Save this failure, then stop processing candidates.
+                stop_after_failure = True
+            else:
+                stop_after_failure = False
             # Save a failure report too, so a skipped candidate is never invisible.
             safe_slug = re.sub(r"[^a-zA-Z0-9_-]", "-", slug or f"candidate-{attempted}")
             path = f"output/{date}-{attempted:02d}-{safe_slug}-FAILED.md"
@@ -468,13 +492,17 @@ def main():
                 file.write(f"# Failed candidate: {item.get('title', slug)}\n\n")
                 file.write(f"- **Problem slug:** {slug}\n- **Error:** {error_text}\n")
             reports.append((item.get("title", slug), "https://leetcode.com/problems/" + str(slug) + "/", item.get("difficulty", ""), "Failed: " + error_text, os.path.basename(path)))
+            if stop_after_failure:
+                break
 
     index_lines = [
         f"# Daily LeetCode Java Agent — {date}", "",
         f"- **Accepted target:** {PROBLEMS_PER_RUN}",
         f"- **Accepted achieved:** {accepted if SUBMIT_TO_LEETCODE else 'Submission disabled'}",
         f"- **Candidates attempted:** {attempted}",
-        f"- **Reports saved:** {len(reports)}", "",
+        f"- **Reports saved:** {len(reports)}",
+        f"- **Submission attempts:** {submissions_made}/{MAX_SUBMISSIONS_PER_RUN}",
+        f"- **Already-solved candidates skipped:** {skipped_solved}", "",
         "A green workflow means the run completed, not that every submission was Accepted.",
         ""
     ]
