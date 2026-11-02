@@ -3,6 +3,9 @@ import os
 import random
 import re
 import time
+import tempfile
+import subprocess
+from pathlib import Path
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -170,6 +173,27 @@ def extract_java_code(answer, java_template=""):
         code = re.sub(r"\b(public|protected|private)\s+" + re.escape(old_name) + r"\s*(?=\()", r"\1 " + required_name, code)
         print(f"Adjusted generated class name to match starter template: {required_name}.")
     return code
+def compile_java_code(java_code):
+    """Compile the generated Java source locally before any LeetCode submission."""
+    with tempfile.TemporaryDirectory(prefix="leetcode-java-check-") as temp_dir:
+        source = java_code.strip()
+        if "import java.util.*;" not in source:
+            source = "import java.util.*;\n" + source
+        class_match = re.search(r"\\b(?:public\\s+)?class\\s+([A-Za-z_$][\\w$]*)", source)
+        if not class_match:
+            raise RuntimeError("Pre-submit check failed: no Java class declaration.")
+        source_path = Path(temp_dir) / (class_match.group(1) + ".java")
+        source_path.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            ["javac", "-encoding", "UTF-8", str(source_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "javac failed without diagnostics").strip()
+            raise RuntimeError("Pre-submit Java compilation failed; no submission was sent: " + details[:4000])
+        print("Pre-submit check passed: Java source compiled successfully.")
+
+
 def submit_to_leetcode(problem, java_code):
     headers = {**leetcode_auth_headers(), "Content-Type": "application/json"}
     payload = {"lang": "java", "question_id": str(problem["question_id"]), "typed_code": java_code}
@@ -395,6 +419,7 @@ def main():
             if SUBMIT_TO_LEETCODE:
                 # Exactly one model generation and at most one LeetCode submission per problem.
                 java_code = extract_java_code(answer, problem.get("java_template", ""))
+                compile_java_code(java_code)
                 submission = submit_to_leetcode(problem, java_code)
                 print(f"Judge result: {submission['status']}")
 
